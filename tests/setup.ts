@@ -8,7 +8,7 @@ global.google = {
       ROADMAP: 'roadmap',
       SATELLITE: 'satellite',
       HYBRID: 'hybrid',
-      TERRAIN: 'terrain'
+      TERRAIN: 'terrain',
     },
     Map: jest.fn().mockImplementation(() => ({
       overlayMapTypes: {
@@ -16,62 +16,62 @@ global.google = {
         removeAt: jest.fn(),
         getAt: jest.fn(),
         getLength: jest.fn().mockReturnValue(0),
-        clear: jest.fn()
+        clear: jest.fn(),
       },
       addListener: jest.fn(),
       removeListener: jest.fn(),
       getZoom: jest.fn().mockReturnValue(10),
-      getCenter: jest.fn().mockReturnValue({ 
-        lat: jest.fn().mockReturnValue(0), 
-        lng: jest.fn().mockReturnValue(0) 
+      getCenter: jest.fn().mockReturnValue({
+        lat: jest.fn().mockReturnValue(0),
+        lng: jest.fn().mockReturnValue(0),
       }),
       getBounds: jest.fn().mockReturnValue({
-        getNorthEast: jest.fn().mockReturnValue({ 
-          lat: jest.fn().mockReturnValue(1), 
-          lng: jest.fn().mockReturnValue(1) 
+        getNorthEast: jest.fn().mockReturnValue({
+          lat: jest.fn().mockReturnValue(1),
+          lng: jest.fn().mockReturnValue(1),
         }),
-        getSouthWest: jest.fn().mockReturnValue({ 
-          lat: jest.fn().mockReturnValue(-1), 
-          lng: jest.fn().mockReturnValue(-1) 
-        })
+        getSouthWest: jest.fn().mockReturnValue({
+          lat: jest.fn().mockReturnValue(-1),
+          lng: jest.fn().mockReturnValue(-1),
+        }),
       }),
       getProjection: jest.fn().mockReturnValue({
         fromLatLngToPoint: jest.fn().mockReturnValue({ x: 100, y: 100 }),
-        fromPointToLatLng: jest.fn().mockReturnValue({ 
-          lat: jest.fn().mockReturnValue(0), 
-          lng: jest.fn().mockReturnValue(0) 
-        })
+        fromPointToLatLng: jest.fn().mockReturnValue({
+          lat: jest.fn().mockReturnValue(0),
+          lng: jest.fn().mockReturnValue(0),
+        }),
       }),
-      getDiv: jest.fn().mockReturnValue(document.createElement('div'))
+      getDiv: jest.fn().mockReturnValue(document.createElement('div')),
     })),
     Size: jest.fn().mockImplementation((width, height) => ({ width, height })),
     Point: jest.fn().mockImplementation((x, y) => ({ x, y })),
-    LatLng: jest.fn().mockImplementation((lat, lng) => ({ 
-      lat: jest.fn().mockReturnValue(lat), 
+    LatLng: jest.fn().mockImplementation((lat, lng) => ({
+      lat: jest.fn().mockReturnValue(lat),
       lng: jest.fn().mockReturnValue(lng),
       equals: jest.fn().mockReturnValue(false),
-      toString: jest.fn().mockReturnValue(`(${lat}, ${lng})`)
+      toString: jest.fn().mockReturnValue(`(${lat}, ${lng})`),
     })),
     LatLngBounds: jest.fn().mockImplementation(() => ({
       contains: jest.fn().mockReturnValue(true),
       extend: jest.fn(),
-      getCenter: jest.fn().mockReturnValue({ 
-        lat: jest.fn().mockReturnValue(0), 
-        lng: jest.fn().mockReturnValue(0) 
-      })
+      getCenter: jest.fn().mockReturnValue({
+        lat: jest.fn().mockReturnValue(0),
+        lng: jest.fn().mockReturnValue(0),
+      }),
     })),
     event: {
       addListener: jest.fn(),
       removeListener: jest.fn(),
       trigger: jest.fn(),
-      clearListeners: jest.fn()
+      clearListeners: jest.fn(),
     },
     ControlPosition: {
       TOP_CENTER: 1,
       TOP_LEFT: 2,
-      TOP_RIGHT: 3
-    }
-  }
+      TOP_RIGHT: 3,
+    },
+  },
 } as any;
 
 // Mock fetch for tile requests
@@ -80,7 +80,7 @@ global.fetch = jest.fn();
 // Mock performance.now for consistent timing
 global.performance = {
   ...global.performance,
-  now: jest.fn(() => Date.now())
+  now: jest.fn(() => Date.now()),
 };
 
 // Enhanced Canvas 2D context mock
@@ -119,12 +119,12 @@ Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
     rect: jest.fn(),
     fillText: jest.fn(),
     strokeText: jest.fn(),
-    
+
     // Canvas properties
     canvas: {
       width: 256,
       height: 256,
-      toDataURL: jest.fn(() => 'data:image/png;base64,mock')
+      toDataURL: jest.fn(() => 'data:image/png;base64,mock'),
     },
     fillStyle: '',
     strokeStyle: '',
@@ -141,8 +141,8 @@ Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
     globalCompositeOperation: 'source-over',
     font: '10px sans-serif',
     textAlign: 'start',
-    textBaseline: 'alphabetic'
-  }))
+    textBaseline: 'alphabetic',
+  })),
 });
 
 // Mock Image constructor
@@ -152,7 +152,7 @@ global.Image = class MockImage {
   src: string = '';
   width: number = 0;
   height: number = 0;
-  
+
   constructor() {
     setTimeout(() => {
       if (this.onload) {

@@ -22,7 +22,7 @@ export class ColorUtils {
         return `rgba(${r}, ${g}, ${b}, ${opacity})`;
       }
     }
-    
+
     // Handle rgb() colors
     if (colorStr.startsWith('rgb(')) {
       const values = colorStr.match(/\d+/g);
@@ -30,26 +30,26 @@ export class ColorUtils {
         return `rgba(${values[0]}, ${values[1]}, ${values[2]}, ${opacity})`;
       }
     }
-    
+
     // Handle rgba() colors - replace existing alpha
     if (colorStr.startsWith('rgba(')) {
       return colorStr.replace(/[\d.]+\)$/, `${opacity})`);
     }
-    
+
     // Handle named colors (convert common ones to rgba)
     const namedColors: Record<string, string> = {
-      'black': `rgba(0, 0, 0, ${opacity})`,
-      'white': `rgba(255, 255, 255, ${opacity})`,
-      'red': `rgba(255, 0, 0, ${opacity})`,
-      'green': `rgba(0, 128, 0, ${opacity})`,
-      'blue': `rgba(0, 0, 255, ${opacity})`,
-      'transparent': 'transparent'
+      black: `rgba(0, 0, 0, ${opacity})`,
+      white: `rgba(255, 255, 255, ${opacity})`,
+      red: `rgba(255, 0, 0, ${opacity})`,
+      green: `rgba(0, 128, 0, ${opacity})`,
+      blue: `rgba(0, 0, 255, ${opacity})`,
+      transparent: 'transparent',
     };
-    
+
     if (namedColors[colorStr.toLowerCase()]) {
       return namedColors[colorStr.toLowerCase()];
     }
-    
+
     // Fallback: return original color (this shouldn't happen in normal cases)
     return colorStr;
   }
@@ -73,26 +73,26 @@ export class ColorUtils {
         return {
           r: parseInt(hex[0] + hex[0], 16),
           g: parseInt(hex[1] + hex[1], 16),
-          b: parseInt(hex[2] + hex[2], 16)
+          b: parseInt(hex[2] + hex[2], 16),
         };
       } else if (hex.length === 6) {
         return {
           r: parseInt(hex.slice(0, 2), 16),
           g: parseInt(hex.slice(2, 4), 16),
-          b: parseInt(hex.slice(4, 6), 16)
+          b: parseInt(hex.slice(4, 6), 16),
         };
       }
     }
-    
+
     // Handle rgb() and rgba() colors
     const rgbMatch = colorStr.match(/rgba?\((.+)\)/);
     if (rgbMatch) {
-      const values = rgbMatch[1].split(',').map(v => parseFloat(v.trim()));
+      const values = rgbMatch[1].split(',').map((v) => parseFloat(v.trim()));
       if (values.length >= 3) {
         const result = {
           r: values[0],
           g: values[1],
-          b: values[2]
+          b: values[2],
         };
         if (values.length >= 4) {
           (result as any).a = values[3];
@@ -100,7 +100,7 @@ export class ColorUtils {
         return result;
       }
     }
-    
+
     return null;
   }
 }

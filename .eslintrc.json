@@ -5,16 +5,8 @@
     "ecmaVersion": 2020,
     "sourceType": "module"
   },
-  "plugins": [
-    "@typescript-eslint",
-    "prettier"
-  ],
-  "extends": [
-    "eslint:recommended",
-    "plugin:@typescript-eslint/recommended",
-    "prettier",
-    "plugin:prettier/recommended"
-  ],
+  "plugins": ["@typescript-eslint", "prettier"],
+  "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended", "prettier", "plugin:prettier/recommended"],
   "env": {
     "node": true,
     "es6": true,
@@ -26,7 +18,7 @@
     "@typescript-eslint/explicit-function-return-type": "warn",
     "@typescript-eslint/no-explicit-any": "warn",
     "@typescript-eslint/no-non-null-assertion": "warn",
-    
+
     // General ESLint rules
     "no-console": "warn",
     "no-debugger": "error",
@@ -38,17 +30,20 @@
     "prefer-template": "error",
     "eqeqeq": ["error", "always"],
     "curly": ["error", "all"],
-    
+
     // Code style rules (Prettier handles most formatting)
     "max-len": ["warn", { "code": 120, "ignoreComments": true, "ignoreStrings": true }],
-    
+
     // Performance and best practices
     "no-await-in-loop": "warn",
     "no-return-await": "error",
-    "prefer-destructuring": ["warn", {
-      "array": false,
-      "object": true
-    }]
+    "prefer-destructuring": [
+      "warn",
+      {
+        "array": false,
+        "object": true
+      }
+    ]
   },
   "overrides": [
     {

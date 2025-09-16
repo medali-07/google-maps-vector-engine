@@ -1,19 +1,19 @@
 import { VectorTileFeature } from '@mapbox/vector-tile';
-import { 
-  MVTFeatureOptions, 
-  TileFeatureData, 
-  TileContext, 
-  FeatureStyle, 
-  Point, 
+import {
+  MVTFeatureOptions,
+  TileFeatureData,
+  TileContext,
+  FeatureStyle,
+  Point,
   GeometryType,
-  CustomDrawFunction
+  CustomDrawFunction,
 } from './types';
 import { ColorUtils } from './ColorUtils';
 
 /**
  * MVTFeature - Represents individual vector features with drawing and interaction capabilities
  * Part of google-maps-vector-engine
- * 
+ *
  * Features include cached canvas contexts, efficient coordinate transformations,
  * and integrated selection/hover state management.
  */
@@ -26,7 +26,7 @@ export class MVTFeature {
   public style: FeatureStyle;
   public type: number;
   public properties: Record<string, any>;
-  
+
   // Performance caching with size limits to prevent memory leaks
   private _cachedContexts: Map<string, CanvasRenderingContext2D> = new Map();
   private _cachedPaths: Map<string, Point[][]> = new Map();
@@ -56,7 +56,7 @@ export class MVTFeature {
       vectorTileFeature,
       divisor: vectorTileFeature.extent / tileContext.tileSize,
       context2d: null,
-      paths2d: null
+      paths2d: null,
     };
 
     this._cachedContexts.delete(tileContext.id);
@@ -131,13 +131,10 @@ export class MVTFeature {
     const tile = this.tiles[tileContext.id];
     if (!tile) return;
 
-    const currentStyle = this.mVTSource.getStyleForFeature?.(
-      tile.vectorTileFeature, 
-      this.featureId
-    ) || this.style;
+    const currentStyle = this.mVTSource.getStyleForFeature?.(tile.vectorTileFeature, this.featureId) || this.style;
 
     const isReplaced = this.selected && this.mVTSource.isFeatureReplaced?.(this.featureId);
-    
+
     if (isReplaced) {
       this._createPathsForHoverDetection(tileContext, tile);
     } else {
@@ -159,7 +156,7 @@ export class MVTFeature {
    */
   defaultDraw(tileContext: TileContext, tile: TileFeatureData, style: FeatureStyle): void {
     const context2d = this._getOptimizedContext2d(tileContext.canvas, style, tileContext.id);
-    
+
     switch (this.type) {
       case GeometryType.Point:
         this.drawPoint(tileContext, tile, style, context2d);
@@ -178,28 +175,28 @@ export class MVTFeature {
    * Fixed: Use hash-based caching to avoid expensive JSON.stringify
    */
   private _getOptimizedContext2d(
-    canvas: HTMLCanvasElement, 
-    style: FeatureStyle, 
-    tileId: string
+    canvas: HTMLCanvasElement,
+    style: FeatureStyle,
+    tileId: string,
   ): CanvasRenderingContext2D {
     const styleHash = this._createStyleHash(style);
     const cacheKey = `${tileId}_${styleHash}`;
     let context2d = this._cachedContexts.get(cacheKey);
-    
+
     if (!context2d) {
       context2d = canvas.getContext('2d')!;
       this._applyStyleToContext(context2d, style);
-      
+
       if (this._cachedContexts.size >= MVTFeature.MAX_CACHE_SIZE) {
         const firstKey = this._cachedContexts.keys().next().value;
         if (firstKey !== undefined) {
           this._cachedContexts.delete(firstKey);
         }
       }
-      
+
       this._cachedContexts.set(cacheKey, context2d);
     }
-    
+
     return context2d;
   }
 
@@ -212,7 +209,7 @@ export class MVTFeature {
       style.fillOpacity?.toString() ?? '',
       style.strokeStyle ?? '',
       style.lineWidth?.toString() ?? '',
-      style.radius?.toString() ?? ''
+      style.radius?.toString() ?? '',
     ].join('|');
   }
 
@@ -226,11 +223,11 @@ export class MVTFeature {
         context2d.fillStyle = ColorUtils.convertColorWithOpacity(style.fillStyle, style.fillOpacity);
       }
     }
-    
+
     if (style.strokeStyle) {
       context2d.strokeStyle = style.strokeStyle;
     }
-    
+
     if (style.lineWidth !== undefined) {
       context2d.lineWidth = style.lineWidth;
     }
@@ -240,10 +237,10 @@ export class MVTFeature {
    * Draw point geometry
    */
   private drawPoint(
-    tileContext: TileContext, 
-    tile: TileFeatureData, 
-    _style: FeatureStyle, 
-    context2d: CanvasRenderingContext2D
+    tileContext: TileContext,
+    tile: TileFeatureData,
+    _style: FeatureStyle,
+    context2d: CanvasRenderingContext2D,
   ): void {
     const geometry = tile.vectorTileFeature.loadGeometry();
     if (!geometry || geometry.length === 0 || !geometry[0] || geometry[0].length === 0) {
@@ -264,10 +261,10 @@ export class MVTFeature {
    * Draw line string with cached paths
    */
   private drawLineString(
-    tileContext: TileContext, 
-    tile: TileFeatureData, 
-    _style: FeatureStyle, 
-    context2d: CanvasRenderingContext2D
+    tileContext: TileContext,
+    tile: TileFeatureData,
+    _style: FeatureStyle,
+    context2d: CanvasRenderingContext2D,
   ): void {
     const paths2d = this._getOptimizedPaths2D(tileContext, tile);
     if (paths2d) {
@@ -279,10 +276,10 @@ export class MVTFeature {
    * Draw polygon with cached paths
    */
   private drawPolygon(
-    tileContext: TileContext, 
-    tile: TileFeatureData, 
-    style: FeatureStyle, 
-    context2d: CanvasRenderingContext2D
+    tileContext: TileContext,
+    tile: TileFeatureData,
+    style: FeatureStyle,
+    context2d: CanvasRenderingContext2D,
   ): void {
     const paths2d = this._getOptimizedPaths2D(tileContext, tile);
     if (paths2d) {
@@ -315,7 +312,7 @@ export class MVTFeature {
     for (let i = 0; i < coordinates.length; i++) {
       const coordinate = coordinates[i];
       const path2 = new Path2D();
-      
+
       for (let j = 0; j < coordinate.length; j++) {
         const point = this._getPoint(coordinate[j], tileContext, tile.divisor);
         if (j === 0) {
@@ -337,7 +334,7 @@ export class MVTFeature {
   getPaths(tileContext: TileContext): Point[][] {
     const cacheKey = tileContext.id;
     const cachedPaths = this._cachedPaths.get(cacheKey);
-    
+
     if (cachedPaths) return cachedPaths;
 
     const tile = this.tiles[tileContext.id];
@@ -345,24 +342,23 @@ export class MVTFeature {
 
     const coordinates = tile.vectorTileFeature.loadGeometry();
     if (!coordinates?.length) return [];
-    
+
     const paths: Point[][] = [];
     for (const coordinate of coordinates) {
       const path = coordinate.map((coord: any) => this._getPoint(coord, tileContext, tile.divisor));
       if (path.length > 0) paths.push(path);
     }
-    
+
     if (this._cachedPaths.size >= MVTFeature.MAX_CACHE_SIZE) {
       const firstKey = this._cachedPaths.keys().next().value;
       if (firstKey !== undefined) {
         this._cachedPaths.delete(firstKey);
       }
     }
-    
+
     this._cachedPaths.set(cacheKey, paths);
     return paths;
   }
-
 
   /**
    * Convert tile coordinates to canvas coordinates
@@ -370,13 +366,13 @@ export class MVTFeature {
   private _getPoint(coords: Point, tileContext: TileContext, divisor: number): Point {
     let point: Point = {
       x: coords.x / divisor,
-      y: coords.y / divisor
+      y: coords.y / divisor,
     };
 
     if (tileContext.parentId) {
       point = this._getOverzoomedPoint(point, tileContext);
     }
-    
+
     return point;
   }
 
@@ -397,8 +393,8 @@ export class MVTFeature {
     const ytileOffset = currentTile.y % scale;
 
     return {
-      x: xScale - (xtileOffset * tileContext.tileSize),
-      y: yScale - (ytileOffset * tileContext.tileSize)
+      x: xScale - xtileOffset * tileContext.tileSize,
+      y: yScale - ytileOffset * tileContext.tileSize,
     };
   }
 
@@ -410,10 +406,10 @@ export class MVTFeature {
     if (!tile || this.type !== GeometryType.Polygon) {
       return false;
     }
-    
+
     const paths2d = this._getOptimizedPaths2D(tileContext, tile);
     if (!paths2d) return false;
-    
+
     const context2d = tileContext.canvas.getContext('2d')!;
     return context2d.isPointInPath(paths2d, point.x, point.y);
   }
@@ -433,7 +429,7 @@ export class MVTFeature {
   dispose(): void {
     this._cachedContexts.clear();
     this._cachedPaths.clear();
-    
+
     if (this.mVTSource.unregisterFeature) {
       this.mVTSource.unregisterFeature(this.featureId);
     }

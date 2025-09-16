@@ -1,12 +1,12 @@
 import { MVTFeature } from '../../src/MVTFeature';
 import { MVTFeatureOptions, GeometryType } from '../../src/types';
-import { 
-  createMockMVTSource, 
-  createMockVectorTileFeature, 
+import {
+  createMockMVTSource,
+  createMockVectorTileFeature,
   createMockTileContext,
   createMockPointFeature,
   createMockLineFeature,
-  createMockCanvasContext
+  createMockCanvasContext,
 } from '../utils/mockData';
 
 describe('MVTFeature', () => {
@@ -18,15 +18,15 @@ describe('MVTFeature', () => {
 
   beforeEach(() => {
     mockMVTSource = createMockMVTSource();
-    mockVectorFeature = createMockVectorTileFeature({ 
+    mockVectorFeature = createMockVectorTileFeature({
       id: 'test-feature',
-      properties: { name: 'Test Feature', category: 'test' }
+      properties: { name: 'Test Feature', category: 'test' },
     });
     tileContext = createMockTileContext();
-    
+
     // Mock canvas getContext to return a proper mock
     jest.spyOn(tileContext.canvas, 'getContext').mockReturnValue(createMockCanvasContext());
-    
+
     featureOptions = {
       mVTSource: mockMVTSource,
       vectorTileFeature: mockVectorFeature,
@@ -34,7 +34,7 @@ describe('MVTFeature', () => {
       style: { fillStyle: 'rgba(0, 100, 200, 0.5)', strokeStyle: 'rgba(0, 100, 200, 1)' },
       selected: false,
       featureId: 'test-feature',
-      customDraw: false
+      customDraw: false,
     };
 
     feature = new MVTFeature(featureOptions);
@@ -51,43 +51,43 @@ describe('MVTFeature', () => {
     test('should initialize with selected state', () => {
       const selectedOptions = { ...featureOptions, selected: true };
       feature = new MVTFeature(selectedOptions);
-      
+
       expect(feature.selected).toBe(true);
     });
 
     test('should initialize with custom style', () => {
-      const customStyle = { 
-        fillStyle: 'red', 
-        strokeStyle: 'blue', 
+      const customStyle = {
+        fillStyle: 'red',
+        strokeStyle: 'blue',
         lineWidth: 3,
-        selected: { fillStyle: 'yellow' }
+        selected: { fillStyle: 'yellow' },
       };
       const styledOptions = { ...featureOptions, style: customStyle };
-      
+
       feature = new MVTFeature(styledOptions);
       expect(feature.style).toEqual(customStyle);
     });
 
     test('should handle point geometry', () => {
       const pointFeature = createMockPointFeature({ id: 'point-test' });
-      const pointOptions = { 
-        ...featureOptions, 
+      const pointOptions = {
+        ...featureOptions,
         vectorTileFeature: pointFeature,
-        featureId: 'point-test'
+        featureId: 'point-test',
       };
-      
+
       feature = new MVTFeature(pointOptions);
       expect(feature.type).toBe(GeometryType.Point);
     });
 
     test('should handle line geometry', () => {
       const lineFeature = createMockLineFeature({ id: 'line-test' });
-      const lineOptions = { 
-        ...featureOptions, 
+      const lineOptions = {
+        ...featureOptions,
         vectorTileFeature: lineFeature,
-        featureId: 'line-test'
+        featureId: 'line-test',
       };
-      
+
       feature = new MVTFeature(lineOptions);
       expect(feature.type).toBe(GeometryType.LineString);
     });
@@ -96,10 +96,10 @@ describe('MVTFeature', () => {
   describe('State Management', () => {
     test('should set selection state directly', () => {
       expect(feature.selected).toBe(false);
-      
+
       feature.setSelected(true);
       expect(feature.selected).toBe(true);
-      
+
       feature.setSelected(false);
       expect(feature.selected).toBe(false);
     });
@@ -114,7 +114,7 @@ describe('MVTFeature', () => {
   describe('Style Management', () => {
     test('should update style', () => {
       const newStyle = { fillStyle: 'green', strokeStyle: 'yellow' };
-      
+
       feature.setStyle(newStyle);
       expect(feature.style).toEqual(newStyle);
     });
@@ -126,15 +126,15 @@ describe('MVTFeature', () => {
         selected: {
           fillStyle: 'orange',
           strokeStyle: 'darkorange',
-          lineWidth: 3
-        }
+          lineWidth: 3,
+        },
       };
-      
+
       feature.setStyle(styleWithSelection);
       expect(feature.style.selected).toEqual({
         fillStyle: 'orange',
         strokeStyle: 'darkorange',
-        lineWidth: 3
+        lineWidth: 3,
       });
     });
   });
@@ -143,9 +143,9 @@ describe('MVTFeature', () => {
     test('should add tile feature correctly', () => {
       const newTileContext = createMockTileContext();
       const newVectorFeature = createMockVectorTileFeature({ id: 'new-feature' });
-      
+
       feature.addTileFeature(newVectorFeature, newTileContext);
-      
+
       const tile = feature.getTile(newTileContext);
       expect(tile.vectorTileFeature).toBe(newVectorFeature);
       expect(tile.divisor).toBe(newVectorFeature.extent / newTileContext.tileSize);
@@ -166,16 +166,16 @@ describe('MVTFeature', () => {
   describe('Drawing', () => {
     test('should draw point features', () => {
       const pointFeature = createMockPointFeature({ id: 'point-test' });
-      const pointOptions = { 
-        ...featureOptions, 
+      const pointOptions = {
+        ...featureOptions,
         vectorTileFeature: pointFeature,
-        featureId: 'point-test'
+        featureId: 'point-test',
       };
-      
+
       const pointMVTFeature = new MVTFeature(pointOptions);
       const mockContext = createMockCanvasContext();
       jest.spyOn(tileContext.canvas, 'getContext').mockReturnValue(mockContext);
-      
+
       expect(() => {
         pointMVTFeature.draw(tileContext);
       }).not.toThrow();
@@ -185,11 +185,11 @@ describe('MVTFeature', () => {
       const style = {
         fillStyle: 'red',
         strokeStyle: 'blue',
-        lineWidth: 2
+        lineWidth: 2,
       };
-      
+
       feature.setStyle(style);
-      
+
       expect(() => {
         feature.draw(tileContext);
       }).not.toThrow();
@@ -198,10 +198,10 @@ describe('MVTFeature', () => {
     test('should use custom draw function when provided', () => {
       const customDraw = jest.fn();
       const customOptions = { ...featureOptions, customDraw };
-      
+
       const customFeature = new MVTFeature(customOptions);
       customFeature.draw(tileContext);
-      
+
       expect(customDraw).toHaveBeenCalled();
     });
   });
@@ -209,22 +209,22 @@ describe('MVTFeature', () => {
   describe('Performance', () => {
     test('should handle rapid style changes efficiently', () => {
       const startTime = performance.now();
-      
+
       for (let i = 0; i < 1000; i++) {
         feature.setStyle({ fillStyle: `hsl(${i % 360}, 50%, 50%)` });
       }
-      
+
       const endTime = performance.now();
       expect(endTime - startTime).toBeLessThan(100); // Should be fast
     });
 
     test('should handle rapid selection changes efficiently', () => {
       const startTime = performance.now();
-      
+
       for (let i = 0; i < 1000; i++) {
         feature.setSelected(i % 2 === 0);
       }
-      
+
       const endTime = performance.now();
       expect(endTime - startTime).toBeLessThan(50); // Should be very fast
     });
@@ -233,7 +233,7 @@ describe('MVTFeature', () => {
       // Test that caching works by calling getPaths multiple times
       const paths1 = feature.getPaths(tileContext);
       const paths2 = feature.getPaths(tileContext);
-      
+
       expect(paths1).toBeDefined();
       expect(paths2).toBeDefined();
       // Both calls should return the same cached result
@@ -244,11 +244,11 @@ describe('MVTFeature', () => {
   describe('Error Handling', () => {
     test('should handle invalid geometry data', () => {
       const invalidFeature = createMockVectorTileFeature({
-        loadGeometry: jest.fn(() => null)
+        loadGeometry: jest.fn(() => null),
       });
-      
+
       const invalidOptions = { ...featureOptions, vectorTileFeature: invalidFeature };
-      
+
       expect(() => {
         new MVTFeature(invalidOptions);
       }).not.toThrow();
@@ -256,11 +256,11 @@ describe('MVTFeature', () => {
 
     test('should handle empty geometry coordinates', () => {
       const emptyFeature = createMockVectorTileFeature({
-        loadGeometry: jest.fn(() => [])
+        loadGeometry: jest.fn(() => []),
       });
-      
+
       const emptyOptions = { ...featureOptions, vectorTileFeature: emptyFeature };
-      
+
       expect(() => {
         new MVTFeature(emptyOptions);
       }).not.toThrow();
@@ -270,11 +270,11 @@ describe('MVTFeature', () => {
       expect(() => {
         feature.setStyle(null as any);
       }).not.toThrow();
-      
+
       expect(() => {
         feature.setStyle(undefined as any);
       }).not.toThrow();
-      
+
       expect(() => {
         feature.setStyle({} as any);
       }).not.toThrow();
@@ -284,14 +284,14 @@ describe('MVTFeature', () => {
   describe('Memory Management', () => {
     test('should clean up tile references when removing tiles', () => {
       const initialTiles = Object.keys(feature.getTiles()).length;
-      
+
       // Add multiple tiles
       for (let i = 0; i < 5; i++) {
         const newTileContext = createMockTileContext();
         const newVectorFeature = createMockVectorTileFeature({ id: `feature-${i}` });
         feature.addTileFeature(newVectorFeature, newTileContext);
       }
-      
+
       const tilesAfterAdd = Object.keys(feature.getTiles()).length;
       expect(tilesAfterAdd).toBeGreaterThan(initialTiles);
     });
@@ -303,7 +303,7 @@ describe('MVTFeature', () => {
         const options = { ...featureOptions, featureId: `feature-${i}` };
         features.push(new MVTFeature(options));
       }
-      
+
       // No specific assertion, just ensure no errors are thrown
       expect(features.length).toBe(10);
     });

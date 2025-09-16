@@ -25,22 +25,26 @@ We welcome contributions to google-maps-vector-engine! This guide will help you 
 ### Development Setup
 
 1. **Fork and clone the repository**:
+
    ```bash
    git clone https://github.com/your-username/google-maps-vector-engine.git
    cd google-maps-vector-engine
    ```
 
 2. **Install dependencies**:
+
    ```bash
    npm install
    ```
 
 3. **Build the project**:
+
    ```bash
    npm run build
    ```
 
 4. **Run tests**:
+
    ```bash
    npm test
    ```
@@ -75,8 +79,9 @@ google-maps-vector-engine/
 ### Types of Contributions
 
 We welcome:
+
 - **Bug fixes** 🐛
-- **New features** ✨ 
+- **New features** ✨
 - **Performance improvements** ⚡
 - **Documentation improvements** 📚
 - **Test coverage improvements** 🧪
@@ -110,7 +115,7 @@ npm run test:watch
 ### Test Guidelines
 
 1. **Write tests for new features** - aim for 90%+ coverage
-2. **Update tests when changing behavior** 
+2. **Update tests when changing behavior**
 3. **Use descriptive test names**
 4. **Test edge cases and error conditions**
 5. **Mock external dependencies** (Google Maps API, fetch calls)
@@ -123,10 +128,10 @@ describe('Component/Feature Name', () => {
     test('should do something specific', () => {
       // Arrange
       const input = createTestData();
-      
+
       // Act
       const result = functionUnderTest(input);
-      
+
       // Assert
       expect(result).toBe(expectedValue);
     });
@@ -179,14 +184,14 @@ export function getTileCoord(latLng: LatLng, zoom: number): TileCoord {
   if (!latLng || typeof zoom !== 'number') {
     throw new Error('Invalid parameters');
   }
-  
+
   const scale = 1 << zoom;
   const worldCoord = project(latLng);
-  
+
   return {
-    x: Math.floor(worldCoord.x * scale / 256),
-    y: Math.floor(worldCoord.y * scale / 256),
-    z: zoom
+    x: Math.floor((worldCoord.x * scale) / 256),
+    y: Math.floor((worldCoord.y * scale) / 256),
+    z: zoom,
   };
 }
 ```
@@ -202,28 +207,29 @@ export function getTileCoord(latLng: LatLng, zoom: number): TileCoord {
 
 ### Documentation Style
 
-```typescript
+````typescript
 /**
  * Brief description of what the function does
- * 
+ *
  * @param paramName - Description of parameter
  * @param optionalParam - Optional parameter description
  * @returns Description of return value
  * @throws {ErrorType} When this error occurs
- * 
+ *
  * @example
  * ```typescript
  * const result = myFunction('example', { option: true });
  * console.log(result);
  * ```
  */
-```
+````
 
 ## 🔄 Submitting Changes
 
 ### Pull Request Process
 
 1. **Create a feature branch**:
+
    ```bash
    git checkout -b feature/your-feature-name
    ```
@@ -235,6 +241,7 @@ export function getTileCoord(latLng: LatLng, zoom: number): TileCoord {
 4. **Update documentation** if needed
 
 5. **Run the full test suite**:
+
    ```bash
    npm test
    npm run lint
@@ -242,9 +249,10 @@ export function getTileCoord(latLng: LatLng, zoom: number): TileCoord {
    ```
 
 6. **Commit with clear messages**:
+
    ```bash
    git commit -m "feat: add new styling feature
-   
+
    - Add support for gradient fills
    - Include tests and documentation
    - Backward compatible with existing styles"
@@ -268,6 +276,7 @@ type(scope): description
 ```
 
 **Types**:
+
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation changes
@@ -277,6 +286,7 @@ type(scope): description
 - `chore`: Maintenance tasks
 
 **Examples**:
+
 ```bash
 feat(styling): add gradient fill support
 fix(selection): resolve click detection on overlapping features
@@ -299,6 +309,7 @@ test(mvtsource): add tests for error handling
 ### Bug Reports
 
 Include:
+
 1. **Clear description** of the issue
 2. **Steps to reproduce** the problem
 3. **Expected vs actual behavior**
@@ -312,6 +323,7 @@ Include:
 ### Feature Requests
 
 Include:
+
 1. **Clear description** of the feature
 2. **Use case** - why is this needed?
 3. **Proposed solution** (if you have ideas)
@@ -321,6 +333,7 @@ Include:
 ## 🏆 Recognition
 
 Contributors will be:
+
 - **Listed in CONTRIBUTORS.md**
 - **Mentioned in release notes** for significant contributions
 - **Given credit** in documentation for major features

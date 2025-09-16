@@ -21,15 +21,15 @@ import {
   FeatureReplacementFunction,
   FeatureSelectionCallback,
   TileManifest,
-  TileAvailabilitySource
+  TileAvailabilitySource,
 } from './types';
 
 /**
  * google-maps-vector-engine - High performance vector tile renderer
- * 
+ *
  * Provides efficient rendering of Mapbox Vector Tiles (MVT/PBF) with:
  * - Fast feature lookups and unified state management
- * - Batched rendering with 60fps debouncing 
+ * - Batched rendering with 60fps debouncing
  * - Advanced styling with selection and hover states
  * - Event handling and GeoJSON overlay support
  */
@@ -66,18 +66,18 @@ export class MVTSource implements google.maps.MapType {
   private _featureIndex: Map<string | number, MVTFeature> = new Map();
   private _selectedFeatureIds: Set<string | number> = new Set();
   private _hoveredFeatureIds: Set<string | number> = new Set();
-  
+
   // Tile management
   private _tilesDrawn: Record<string, TileContext> = {};
   private _visibleTiles: Record<string, TileContext> = {};
-  
+
   // GeoJSON overlay management
   private _geoJSONOverlays: Record<string | number, google.maps.Data.Feature> = {};
   private _replacedFeatures: Record<string | number, GeoJSONFeature> = {};
   private _getReplacementFeature: FeatureReplacementFunction | undefined;
   private _featureSelectionCallback: FeatureSelectionCallback | undefined;
   private _pendingReplacementRequests: Map<string | number, AbortController> = new Map();
-  
+
   // Event handling
   private _onClickCallback: ((event: MVTMouseEvent) => void) | undefined;
   private _onMouseHoverCallback: ((event: MVTMouseEvent) => void) | undefined;
@@ -86,7 +86,7 @@ export class MVTSource implements google.maps.MapType {
   private _limitToFirstVisibleLayer = false;
   private _hoverDelay = 0;
   private event: MVTMouseEvent | null = null;
-  
+
   // Event listener references for cleanup
   private _eventListeners: google.maps.MapsEventListener[] = [];
 
@@ -98,11 +98,11 @@ export class MVTSource implements google.maps.MapType {
   private _pendingRedraws: Set<string> = new Set();
   private _redrawDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly REDRAW_DEBOUNCE_MS = 16;
-  
+
   // Cache size limits to prevent memory leaks
   private static readonly MAX_TILES_CACHE_SIZE = 100;
   private static readonly MAX_VISIBLE_TILES_SIZE = 50;
-  
+
   // Default color palette for consistency
   private static readonly DEFAULT_COLORS = {
     POINT_FILL: 'rgba(49,79,79,1)',
@@ -110,13 +110,13 @@ export class MVTSource implements google.maps.MapType {
     POLYGON_FILL: 'rgba(188, 189, 220, 0.5)',
     POLYGON_STROKE: 'rgba(136, 86, 167, 1)',
     SELECTED_POINT: 'rgba(255,255,0,0.8)',
-    SELECTED_LINE: 'rgba(255,25,0,0.8)', 
+    SELECTED_LINE: 'rgba(255,25,0,0.8)',
     SELECTED_POLYGON_FILL: 'rgba(255,140,0,0.4)',
     SELECTED_POLYGON_STROKE: 'rgba(255,140,0,1)',
     DEBUG_STROKE: '#000000',
     DEBUG_FILL: '#FFFF00',
     DEBUG_TEXT_BG: 'rgba(255, 255, 255, 0.8)',
-    DEBUG_TEXT: '#000000'
+    DEBUG_TEXT: '#000000',
   };
 
   public style: FeatureStyle | FeatureStyleFunction;
@@ -128,11 +128,11 @@ export class MVTSource implements google.maps.MapType {
     this._debug = options.debug || false;
     this._defaultFeatureId = options.defaultFeatureId || 'fid';
     this._getIDForLayerFeature = options.getIDForLayerFeature || this.defaultGetIDForLayerFeature;
-    
+
     // Initialize debug logger
     this.logger = createLogger('MVTSource');
     debugLogger.setDebug(this._debug);
-    
+
     this._visibleLayers = options.visibleLayers;
     this._xhrHeaders = options.xhrHeaders || {};
     this._clickableLayers = options.clickableLayers || false;
@@ -142,10 +142,10 @@ export class MVTSource implements google.maps.MapType {
     this._customDraw = options.customDraw || false;
     this._getReplacementFeature = options.getReplacementFeature;
     this._featureSelectionCallback = options.featureSelectionCallback;
-    
+
     // Tile availability manifest configuration
     this._tileAvailabilityManifest = options.tileAvailabilityManifest;
-    
+
     // Event handling configuration
     this._onClickCallback = options.onClick;
     this._onMouseHoverCallback = options.onMouseHover;
@@ -154,7 +154,7 @@ export class MVTSource implements google.maps.MapType {
     this._setSelectedOnClick = options.setSelectedOnClick !== undefined ? options.setSelectedOnClick : true;
     this._limitToFirstVisibleLayer = options.limitToFirstVisibleLayer || false;
     this._hoverDelay = options.hoverDelay || 0;
-    
+
     this.tileSize = new google.maps.Size(this._tileSize, this._tileSize);
     this.style = options.style || this.defaultStyle.bind(this);
     this.name = 'Optimized MVT Layer';
@@ -173,13 +173,13 @@ export class MVTSource implements google.maps.MapType {
 
     this._setupEventListeners();
     this._setupGeoJSONClickHandlers();
-    
+
     // Initialize manifest asynchronously, but add to map immediately
     // Tile requests will be handled gracefully during manifest loading
-    this._initializeManifest().catch(error => {
+    this._initializeManifest().catch((error) => {
       this.logger.warn('Manifest initialization failed:', error);
     });
-    
+
     this.map.overlayMapTypes.push(this);
   }
 
@@ -212,7 +212,7 @@ export class MVTSource implements google.maps.MapType {
    */
   private _extractFeatureProperty(properties: Record<string, any>, propertyName: string): string | number | null {
     const value = properties[propertyName];
-    return (typeof value === 'string' || typeof value === 'number') ? value : null;
+    return typeof value === 'string' || typeof value === 'number' ? value : null;
   }
 
   /**
@@ -220,18 +220,18 @@ export class MVTSource implements google.maps.MapType {
    */
   private defaultGetIDForLayerFeature(feature: VectorTileFeature): string | number {
     const props = feature.properties;
-    
+
     // Try configured default property first
     const defaultValue = this._extractFeatureProperty(props, this._defaultFeatureId);
     if (defaultValue !== null) return defaultValue;
-    
+
     // Fallback to common ID property names
     const commonIdFields = ['id', 'Id', 'ID'];
     for (const field of commonIdFields) {
       const value = this._extractFeatureProperty(props, field);
       if (value !== null) return value;
     }
-    
+
     // Generate random ID as last resort
     return `feature_${Math.random().toString(36).substring(2, 11)}`;
   }
@@ -248,7 +248,11 @@ export class MVTSource implements google.maps.MapType {
         this.logger.info('Manifest loaded from API:', Object.keys(this._resolvedManifest || {}).length, 'zoom levels');
       } else {
         this._resolvedManifest = this._tileAvailabilityManifest;
-        this.logger.info('Manifest loaded from static data:', Object.keys(this._resolvedManifest || {}).length, 'zoom levels');
+        this.logger.info(
+          'Manifest loaded from static data:',
+          Object.keys(this._resolvedManifest || {}).length,
+          'zoom levels',
+        );
       }
     } catch (error) {
       this.logger.warn('Failed to load tile availability manifest:', error);
@@ -283,13 +287,13 @@ export class MVTSource implements google.maps.MapType {
     // Check if y coordinate falls within any of the available ranges
     const yRanges = this._resolvedManifest[zoomLevel][xCoordinate];
     const isAvailable = yRanges.some(([yStart, yEnd]) => y >= yStart && y <= yEnd);
-    
+
     if (isAvailable) {
       this.logger.log(`Tile ${z}/${x}/${y} is available according to manifest`);
     } else {
       this.logger.log(`Tile ${z}/${x}/${y} not in available Y ranges: ${JSON.stringify(yRanges)}`);
     }
-    
+
     return isAvailable;
   }
 
@@ -298,25 +302,25 @@ export class MVTSource implements google.maps.MapType {
    */
   private defaultStyle(feature: VectorTileFeature): FeatureStyle {
     const style: FeatureStyle = {};
-    
+
     switch (feature.type) {
       case GeometryType.Point:
         style.fillStyle = MVTSource.DEFAULT_COLORS.POINT_FILL;
         style.radius = 5;
         break;
-        
+
       case GeometryType.LineString:
         style.strokeStyle = MVTSource.DEFAULT_COLORS.LINE_STROKE;
         style.lineWidth = 3;
         break;
-        
+
       case GeometryType.Polygon:
         style.fillStyle = MVTSource.DEFAULT_COLORS.POLYGON_FILL;
         style.strokeStyle = MVTSource.DEFAULT_COLORS.POLYGON_STROKE;
         style.lineWidth = 1;
         break;
     }
-    
+
     return style;
   }
 
@@ -328,22 +332,22 @@ export class MVTSource implements google.maps.MapType {
       case GeometryType.Point:
         return {
           fillStyle: MVTSource.DEFAULT_COLORS.SELECTED_POINT,
-          radius: 7
+          radius: 7,
         };
-        
+
       case GeometryType.LineString:
         return {
           strokeStyle: MVTSource.DEFAULT_COLORS.SELECTED_LINE,
-          lineWidth: 5
+          lineWidth: 5,
         };
-        
+
       case GeometryType.Polygon:
         return {
           fillStyle: MVTSource.DEFAULT_COLORS.SELECTED_POLYGON_FILL,
           strokeStyle: MVTSource.DEFAULT_COLORS.SELECTED_POLYGON_STROKE,
-          lineWidth: 3
+          lineWidth: 3,
         };
-        
+
       default:
         return {};
     }
@@ -371,17 +375,17 @@ export class MVTSource implements google.maps.MapType {
    */
   private _zoomChanged(): void {
     this.logger.log('Zoom changed - preserving selections');
-    
+
     const selectedIds = Array.from(this._selectedFeatureIds);
-    
+
     this._resetVisibleTiles();
     if (!this._cache) {
       this._resetMVTLayers();
     }
-    
+
     if (selectedIds.length > 0) {
       setTimeout(() => {
-        selectedIds.forEach(featureId => {
+        selectedIds.forEach((featureId) => {
           this._selectedFeatureIds.add(featureId);
         });
         this._scheduleRedraw('all');
@@ -413,11 +417,11 @@ export class MVTSource implements google.maps.MapType {
     if (visibleTileIds.length >= MVTSource.MAX_VISIBLE_TILES_SIZE) {
       // Remove oldest tiles (simple FIFO approach)
       const tilesToRemove = visibleTileIds.slice(0, visibleTileIds.length - MVTSource.MAX_VISIBLE_TILES_SIZE + 1);
-      tilesToRemove.forEach(tileId => {
+      tilesToRemove.forEach((tileId) => {
         delete this._visibleTiles[tileId];
       });
     }
-    
+
     this._visibleTiles[tileContext.id] = tileContext;
   }
 
@@ -427,7 +431,7 @@ export class MVTSource implements google.maps.MapType {
   drawTile(coord: google.maps.Point, zoom: number, ownerDocument: Document): TileContext {
     const id = this.getTileId(zoom, coord.x, coord.y);
     let tileContext = this._tilesDrawn[id];
-    
+
     if (tileContext) {
       return tileContext;
     }
@@ -435,7 +439,7 @@ export class MVTSource implements google.maps.MapType {
     tileContext = this._createTileContext(coord, zoom, ownerDocument);
     this.loadedTilesLen = 0;
     this._xhrRequest(tileContext);
-    
+
     return tileContext;
   }
 
@@ -452,7 +456,7 @@ export class MVTSource implements google.maps.MapType {
       canvas,
       zoom,
       tileSize: this._tileSize,
-      parentId
+      parentId,
     };
   }
 
@@ -461,7 +465,7 @@ export class MVTSource implements google.maps.MapType {
    */
   private _getParentId(id: string): string | undefined {
     if (!this._sourceMaxZoom) return undefined;
-    
+
     const tile = this.getTileObject(id);
     if (tile.z > this._sourceMaxZoom) {
       const zoomDistance = tile.z - this._sourceMaxZoom;
@@ -470,7 +474,7 @@ export class MVTSource implements google.maps.MapType {
       const y = tile.y >> zoomDistance;
       return this.getTileId(zoom, x, y);
     }
-    
+
     return undefined;
   }
 
@@ -500,7 +504,7 @@ export class MVTSource implements google.maps.MapType {
     return {
       z: parseInt(values[0]),
       x: parseInt(values[1]),
-      y: parseInt(values[2])
+      y: parseInt(values[2]),
     };
   }
 
@@ -559,7 +563,7 @@ export class MVTSource implements google.maps.MapType {
     const uint8Array = new Uint8Array(response);
     const pbf = new Protobuf(uint8Array);
     const vectorTile = new VectorTile(pbf);
-    
+
     this._parseVectorTileGeometries(vectorTile);
     this._drawVectorTile(vectorTile, tileContext);
   }
@@ -569,7 +573,7 @@ export class MVTSource implements google.maps.MapType {
    */
   private _parseVectorTileGeometries(vectorTile: VectorTile): void {
     this.logger.log('Parsing vector tile with layers:', Object.keys(vectorTile.layers));
-    
+
     for (const key in vectorTile.layers) {
       const layer = vectorTile.layers[key];
       this.logger.log(`Layer "${key}" has ${layer.length} features`);
@@ -599,17 +603,17 @@ export class MVTSource implements google.maps.MapType {
    */
   private _setTileDrawn(tileContext: TileContext): void {
     if (!this._cache) return;
-    
+
     // Implement cache size limit to prevent memory leaks
     const drawnTileIds = Object.keys(this._tilesDrawn);
     if (drawnTileIds.length >= MVTSource.MAX_TILES_CACHE_SIZE) {
       // Remove oldest tiles (simple FIFO approach)
       const tilesToRemove = drawnTileIds.slice(0, drawnTileIds.length - MVTSource.MAX_TILES_CACHE_SIZE + 1);
-      tilesToRemove.forEach(tileId => {
+      tilesToRemove.forEach((tileId) => {
         delete this._tilesDrawn[tileId];
       });
     }
-    
+
     this._tilesDrawn[tileContext.id] = tileContext;
   }
 
@@ -634,7 +638,7 @@ export class MVTSource implements google.maps.MapType {
   redrawTile(id: string): void {
     const tileContext = this._visibleTiles[id];
     if (!tileContext || !tileContext.vectorTile) return;
-    
+
     this._scheduleRedraw(id);
   }
 
@@ -668,19 +672,23 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Draw vector tile layer
    */
-  private _drawVectorTileLayer(vectorTileLayer: import('@mapbox/vector-tile').VectorTileLayer, key: string, tileContext: TileContext): void {
+  private _drawVectorTileLayer(
+    vectorTileLayer: import('@mapbox/vector-tile').VectorTileLayer,
+    key: string,
+    tileContext: TileContext,
+  ): void {
     this.logger.log(`Drawing layer "${key}"`);
-    
+
     if (!this.mVTLayers[key]) {
       this.mVTLayers[key] = this._createMVTLayer(key);
     }
-    
+
     // Extract features from vector tile layer
     const features: VectorTileFeature[] = [];
     for (let i = 0; i < vectorTileLayer.length; i++) {
       features.push(vectorTileLayer.feature(i));
     }
-    
+
     const mVTLayer = this.mVTLayers[key];
     mVTLayer.parseVectorTileFeatures(this, features, tileContext);
   }
@@ -694,7 +702,7 @@ export class MVTSource implements google.maps.MapType {
       filter: this._filter,
       style: this.style,
       name: key,
-      customDraw: this._customDraw
+      customDraw: this._customDraw,
     };
     return new MVTLayer(options);
   }
@@ -714,24 +722,24 @@ export class MVTSource implements google.maps.MapType {
     context2d.lineWidth = 1;
     context2d.strokeRect(0, 0, width, height);
     context2d.font = '12px Arial';
-    
+
     // Draw corner markers
     context2d.fillRect(0, 0, 5, 5);
     context2d.fillRect(0, height - 5, 5, 5);
     context2d.fillRect(width - 5, 0, 5, 5);
     context2d.fillRect(width - 5, height - 5, 5, 5);
     context2d.fillRect(width / 2 - 5, height / 2 - 5, 10, 10);
-    
+
     // Draw tile coordinates with nice styling
     const coordText = `${tileContext.zoom} ${tile.x} ${tile.y}`;
     const textMetrics = context2d.measureText(coordText);
     const textX = width / 2 - textMetrics.width / 2;
     const textY = height / 2 - 5;
-    
+
     // Add white background for better readability
     context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_TEXT_BG;
     context2d.fillRect(textX - 2, textY - 12, textMetrics.width + 4, 16);
-    
+
     // Draw text in black
     context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_TEXT;
     context2d.fillText(coordText, textX, textY);
@@ -775,7 +783,7 @@ export class MVTSource implements google.maps.MapType {
   private _convertToMVTEvent(event: google.maps.MapMouseEvent): MVTMouseEvent | null {
     const projection = this.map.getProjection();
     const bounds = this.map.getBounds();
-    
+
     if (projection && bounds && event.latLng) {
       const ne = bounds.getNorthEast();
       const sw = bounds.getSouthWest();
@@ -783,20 +791,17 @@ export class MVTSource implements google.maps.MapType {
       const bottomLeft = projection.fromLatLngToPoint(sw);
       const scale = 1 << (this.map.getZoom() || 0); // Faster than Math.pow(2, zoom)
       const worldPoint = projection.fromLatLngToPoint(event.latLng);
-      
+
       if (topRight && bottomLeft && worldPoint) {
-        const pixel = new google.maps.Point(
-          (worldPoint.x - bottomLeft.x) * scale,
-          (worldPoint.y - topRight.y) * scale
-        );
-        
+        const pixel = new google.maps.Point((worldPoint.x - bottomLeft.x) * scale, (worldPoint.y - topRight.y) * scale);
+
         return {
           latLng: event.latLng,
-          pixel: pixel
+          pixel: pixel,
         };
       }
     }
-    
+
     return null;
   }
 
@@ -807,14 +812,18 @@ export class MVTSource implements google.maps.MapType {
     return {
       setSelected: this._setSelectedOnClick,
       limitToFirstVisibleLayer: this._limitToFirstVisibleLayer,
-      delay: mouseHover ? this._hoverDelay : 0
+      delay: mouseHover ? this._hoverDelay : 0,
     };
   }
 
   /**
    * Process mouse events
    */
-  private _mouseEvent(event: MVTMouseEvent, callbackFunction?: (event: MVTMouseEvent) => void, options?: MouseEventOptions): void {
+  private _mouseEvent(
+    event: MVTMouseEvent,
+    callbackFunction?: (event: MVTMouseEvent) => void,
+    options?: MouseEventOptions,
+  ): void {
     if (!event.pixel || !event.latLng) return;
 
     if (options?.delay === 0) {
@@ -832,7 +841,11 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Continue mouse event processing
    */
-  private _mouseEventContinue(event: MVTMouseEvent, callbackFunction?: (event: MVTMouseEvent) => void, options?: MouseEventOptions): void {
+  private _mouseEventContinue(
+    event: MVTMouseEvent,
+    callbackFunction?: (event: MVTMouseEvent) => void,
+    options?: MouseEventOptions,
+  ): void {
     const callback = callbackFunction || (() => {});
     const zoom = this.map.getZoom() || 0;
     const tile = Mercator.getTileAtLatLng(event.latLng, zoom);
@@ -854,11 +867,11 @@ export class MVTSource implements google.maps.MapType {
     for (let i = clickableLayers.length - 1; i >= 0; i--) {
       const key = clickableLayers[i];
       const layer = this.mVTLayers[key];
-      
+
       if (layer) {
         const processedEvent = layer.handleClickEvent(event, this);
         this._mouseSelectedFeature(processedEvent, callback, options ?? {});
-        
+
         if (options?.limitToFirstVisibleLayer && processedEvent.feature) {
           break;
         }
@@ -869,7 +882,11 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Handle mouse events on features
    */
-  private _mouseSelectedFeature(event: MVTMouseEvent, callbackFunction?: (event: MVTMouseEvent) => void, options?: MouseEventOptions): void {
+  private _mouseSelectedFeature(
+    event: MVTMouseEvent,
+    callbackFunction?: (event: MVTMouseEvent) => void,
+    options?: MouseEventOptions,
+  ): void {
     let selectionChanged = false;
 
     if (event.feature) {
@@ -920,11 +937,11 @@ export class MVTSource implements google.maps.MapType {
 
     this._selectedFeatureIds.add(featureId);
     const feature = this._featureIndex.get(featureId);
-    
+
     if (feature) {
       feature.setSelected(true);
       this._scheduleRedrawForFeature(featureId);
-      
+
       if (this._featureSelectionCallback) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
@@ -939,20 +956,20 @@ export class MVTSource implements google.maps.MapType {
    */
   private _deselectFeature(featureId: string | number): void {
     this._selectedFeatureIds.delete(featureId);
-    
+
     // Cancel any pending replacement requests for this feature
     const pendingRequest = this._pendingReplacementRequests.get(featureId);
     if (pendingRequest) {
       pendingRequest.abort();
       this._pendingReplacementRequests.delete(featureId);
     }
-    
+
     const feature = this._featureIndex.get(featureId);
-    
+
     if (feature) {
       feature.setSelected(false);
       this._scheduleRedrawForFeature(featureId);
-      
+
       if (this._featureSelectionCallback) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
@@ -970,20 +987,20 @@ export class MVTSource implements google.maps.MapType {
    */
   deselectAllFeatures(): void {
     const selectedIds = Array.from(this._selectedFeatureIds);
-    
+
     this._selectedFeatureIds.clear();
-    
+
     // Cancel all pending replacement requests
     this._pendingReplacementRequests.forEach((controller) => {
       controller.abort();
     });
     this._pendingReplacementRequests.clear();
-    
-    selectedIds.forEach(featureId => {
+
+    selectedIds.forEach((featureId) => {
       const feature = this._featureIndex.get(featureId);
       if (feature) {
         feature.setSelected(false);
-        
+
         if (this._featureSelectionCallback) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
@@ -1027,8 +1044,8 @@ export class MVTSource implements google.maps.MapType {
     if (hoveredIds.length === 0) return;
 
     this._hoveredFeatureIds.clear();
-    
-    hoveredIds.forEach(featureId => {
+
+    hoveredIds.forEach((featureId) => {
       const feature = this._featureIndex.get(featureId);
       if (feature) {
         feature.hovered = false;
@@ -1045,7 +1062,7 @@ export class MVTSource implements google.maps.MapType {
     if (!feature) return;
 
     const tileIds = Object.keys(feature.getTiles());
-    tileIds.forEach(tileId => {
+    tileIds.forEach((tileId) => {
       if (this._visibleTiles[tileId]) {
         this._pendingRedraws.add(tileId);
       }
@@ -1059,7 +1076,7 @@ export class MVTSource implements google.maps.MapType {
    */
   private _scheduleRedraw(scope: 'all' | string): void {
     if (scope === 'all') {
-      Object.keys(this._visibleTiles).forEach(tileId => {
+      Object.keys(this._visibleTiles).forEach((tileId) => {
         this._pendingRedraws.add(tileId);
       });
     } else {
@@ -1091,7 +1108,7 @@ export class MVTSource implements google.maps.MapType {
 
     this.logger.log(`Executing ${this._pendingRedraws.size} pending redraws`);
 
-    this._pendingRedraws.forEach(tileId => {
+    this._pendingRedraws.forEach((tileId) => {
       const tileContext = this._visibleTiles[tileId];
       if (tileContext && tileContext.vectorTile) {
         this.deleteTileDrawn(tileId);
@@ -1129,8 +1146,8 @@ export class MVTSource implements google.maps.MapType {
    */
   getSelectedFeatures(): MVTFeature[] {
     return Array.from(this._selectedFeatureIds)
-      .map(id => this._featureIndex.get(id))
-      .filter(feature => feature !== undefined) as MVTFeature[];
+      .map((id) => this._featureIndex.get(id))
+      .filter((feature) => feature !== undefined) as MVTFeature[];
   }
 
   /**
@@ -1164,10 +1181,10 @@ export class MVTSource implements google.maps.MapType {
     if (featuresIds.length > 1) {
       this._multipleSelection = true;
     }
-    
+
     this.deselectAllFeatures();
-    
-    featuresIds.forEach(featureId => {
+
+    featuresIds.forEach((featureId) => {
       this._selectFeature(featureId);
     });
   }
@@ -1177,7 +1194,7 @@ export class MVTSource implements google.maps.MapType {
    */
   setFilter(filter: FilterFunction | false, redrawTiles = true): void {
     this._filter = filter;
-    Object.values(this.mVTLayers).forEach(layer => {
+    Object.values(this.mVTLayers).forEach((layer) => {
       layer.setFilter(filter);
     });
 
@@ -1191,10 +1208,10 @@ export class MVTSource implements google.maps.MapType {
    */
   setStyle(style: FeatureStyle | FeatureStyleFunction, redrawTiles = true): void {
     const currentSelectedIds = Array.from(this._selectedFeatureIds);
-    
+
     this.style = style;
-    
-    Object.values(this.mVTLayers).forEach(layer => {
+
+    Object.values(this.mVTLayers).forEach((layer) => {
       layer.setStyle(style);
     });
 
@@ -1218,23 +1235,25 @@ export class MVTSource implements google.maps.MapType {
     const isSelected = this._selectedFeatureIds.has(featureId);
     const isHovered = this._hoveredFeatureIds.has(featureId);
     const baseStyle = typeof this.style === 'function' ? this.style(feature) : this.style;
-    
+
     let resultStyle = { ...baseStyle };
-    
+
     delete resultStyle.selected;
     delete resultStyle.hover;
-    
+
     if (isSelected && baseStyle.selected) {
       resultStyle = { ...resultStyle, ...baseStyle.selected };
     } else if (isHovered && baseStyle.hover) {
       resultStyle = { ...resultStyle, ...baseStyle.hover };
     } else if (isSelected && !baseStyle.selected) {
       const computedSelectedStyle = this.getSelectedStyle(feature);
-      resultStyle = { 
+      resultStyle = {
         ...resultStyle,
-        ...((!resultStyle.fillStyle || resultStyle.fillStyle === 'transparent') ? { fillStyle: computedSelectedStyle.fillStyle } : {}),
-        ...((!resultStyle.strokeStyle) ? { strokeStyle: computedSelectedStyle.strokeStyle } : {}),
-        ...((!resultStyle.lineWidth) ? { lineWidth: computedSelectedStyle.lineWidth } : {})
+        ...(!resultStyle.fillStyle || resultStyle.fillStyle === 'transparent'
+          ? { fillStyle: computedSelectedStyle.fillStyle }
+          : {}),
+        ...(!resultStyle.strokeStyle ? { strokeStyle: computedSelectedStyle.strokeStyle } : {}),
+        ...(!resultStyle.lineWidth ? { lineWidth: computedSelectedStyle.lineWidth } : {}),
       };
     } else if (isHovered && !baseStyle.hover) {
       if (resultStyle.fillStyle && !resultStyle.fillStyle.includes('rgba(')) {
@@ -1244,7 +1263,7 @@ export class MVTSource implements google.maps.MapType {
         }
       }
     }
-    
+
     return resultStyle;
   }
 
@@ -1262,7 +1281,7 @@ export class MVTSource implements google.maps.MapType {
   setUrl(url: string, redrawTiles = true): void {
     this._url = url;
     this._resetMVTLayers();
-    
+
     if (redrawTiles) {
       this._scheduleRedraw('all');
     }
@@ -1324,17 +1343,17 @@ export class MVTSource implements google.maps.MapType {
     const dataClickListener = this.map.data.addListener('click', (event: google.maps.Data.MouseEvent) => {
       if (event.feature) {
         let featureId: string | number | null = null;
-        
+
         for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
           if (overlay === event.feature) {
             featureId = id;
             break;
           }
         }
-        
+
         if (featureId !== null) {
           this.logger.log(`GeoJSON overlay clicked for feature ID: ${featureId}`);
-          
+
           if (this._selectedFeatureIds.has(featureId)) {
             this._deselectFeature(featureId);
           } else {
@@ -1348,24 +1367,24 @@ export class MVTSource implements google.maps.MapType {
     const dataMouseOverListener = this.map.data.addListener('mouseover', (event: google.maps.Data.MouseEvent) => {
       if (event.feature && this._onMouseHoverCallback) {
         let featureId: string | number | null = null;
-        
+
         for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
           if (overlay === event.feature) {
             featureId = id;
             break;
           }
         }
-        
+
         if (featureId !== null) {
           const mvtEvent: MVTMouseEvent = {
             latLng: event.latLng || new google.maps.LatLng(0, 0),
             pixel: new google.maps.Point(0, 0),
             feature: {
               featureId: featureId,
-              properties: this._replacedFeatures[featureId]?.properties || {}
-            }
+              properties: this._replacedFeatures[featureId]?.properties || {},
+            },
           };
-          
+
           this._onMouseHoverCallback(mvtEvent);
         }
       }
@@ -1375,24 +1394,24 @@ export class MVTSource implements google.maps.MapType {
     const dataMouseMoveListener = this.map.data.addListener('mousemove', (event: google.maps.Data.MouseEvent) => {
       if (event.feature && this._onMouseHoverCallback) {
         let featureId: string | number | null = null;
-        
+
         for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
           if (overlay === event.feature) {
             featureId = id;
             break;
           }
         }
-        
+
         if (featureId !== null) {
           const mvtEvent: MVTMouseEvent = {
             latLng: event.latLng || new google.maps.LatLng(0, 0),
             pixel: new google.maps.Point(0, 0),
             feature: {
               featureId: featureId,
-              properties: this._replacedFeatures[featureId]?.properties || {}
-            }
+              properties: this._replacedFeatures[featureId]?.properties || {},
+            },
           };
-          
+
           this._onMouseHoverCallback(mvtEvent);
         }
       }
@@ -1404,9 +1423,9 @@ export class MVTSource implements google.maps.MapType {
         const mvtEvent: MVTMouseEvent = {
           latLng: event.latLng || new google.maps.LatLng(0, 0),
           pixel: new google.maps.Point(0, 0),
-          feature: undefined
+          feature: undefined,
         };
-        
+
         this._onMouseHoverCallback(mvtEvent);
       }
     });
@@ -1419,12 +1438,12 @@ export class MVTSource implements google.maps.MapType {
   private _addGeoJSONOverlay(featureId: string | number, geoJSONFeature: GeoJSONFeature): void {
     try {
       this._removeGeoJSONOverlay(featureId);
-      
+
       const dataFeature = this.map.data.addGeoJson({
         type: 'FeatureCollection',
-        features: [geoJSONFeature]
+        features: [geoJSONFeature],
       })[0];
-      
+
       if (dataFeature) {
         this._geoJSONOverlays[featureId] = dataFeature;
         this.map.data.overrideStyle(dataFeature, this._getGeoJSONSelectedStyle());
@@ -1455,19 +1474,19 @@ export class MVTSource implements google.maps.MapType {
    * Get GeoJSON selected style based on current configuration
    */
   private _getGeoJSONSelectedStyle(): google.maps.Data.StyleOptions {
-    const baseStyle = typeof this.style === 'function' ? {} : this.style as FeatureStyle;
+    const baseStyle = typeof this.style === 'function' ? {} : (this.style as FeatureStyle);
     let selectedStyle = baseStyle.selected || {};
-    
+
     if (!baseStyle.selected) {
       selectedStyle = this.getSelectedStyle({ type: 3, properties: {} } as any);
     }
-    
+
     return {
       fillColor: this._convertMVTColorToGoogleMaps(selectedStyle.fillStyle || '') || '#ff8c00',
       fillOpacity: this._extractOpacityFromColor(selectedStyle.fillStyle || '') || 0.4,
       strokeColor: this._convertMVTColorToGoogleMaps(selectedStyle.strokeStyle || '') || '#ff8c00',
       strokeWeight: selectedStyle.lineWidth || 3,
-      strokeOpacity: 1
+      strokeOpacity: 1,
     };
   }
 
@@ -1476,26 +1495,25 @@ export class MVTSource implements google.maps.MapType {
    */
   private _convertMVTColorToGoogleMaps(color: string): string | undefined {
     if (!color) return undefined;
-    
+
     const parsed = ColorUtils.parseRgb(color);
     if (parsed) {
       return `rgb(${parsed.r}, ${parsed.g}, ${parsed.b})`;
     }
-    
+
     // Return other colors as-is (hex, rgb, named colors)
     return color;
   }
-  
+
   /**
    * Extract opacity from color string using ColorUtils
    */
   private _extractOpacityFromColor(color: string): number | undefined {
     if (!color) return undefined;
-    
+
     const parsed = ColorUtils.parseRgb(color);
     return parsed?.a;
   }
-
 
   /**
    * Merge all features with the same ID from PBF data into a single GeoJSON feature
@@ -1514,7 +1532,7 @@ export class MVTSource implements google.maps.MapType {
     for (const [tileId, tileData] of Object.entries(tiles)) {
       const vectorFeature = tileData.vectorTileFeature;
       const coordinates = vectorFeature.loadGeometry();
-      
+
       if (coordinates && coordinates.length > 0) {
         // Set properties from the first feature encountered
         if (Object.keys(properties).length === 0) {
@@ -1525,13 +1543,14 @@ export class MVTSource implements google.maps.MapType {
         const tileContext = this._visibleTiles[tileId];
         if (tileContext) {
           const convertedCoords = this._convertPBFCoordinatesToGeoJSON(
-            coordinates, 
-            tileContext, 
+            coordinates,
+            tileContext,
             tileData.divisor,
-            vectorFeature.type
+            vectorFeature.type,
           );
-          
-          if (convertedCoords && vectorFeature.type === 3) { // Only handle Polygons for now
+
+          if (convertedCoords && vectorFeature.type === 3) {
+            // Only handle Polygons for now
             // convertedCoords is an array of rings from this tile
             if (Array.isArray(convertedCoords) && convertedCoords.length > 0) {
               // Add all rings from this tile to our collection
@@ -1548,7 +1567,9 @@ export class MVTSource implements google.maps.MapType {
 
     if (allCoordinateRings.length === 0) return null;
 
-    this.logger.log(`Collected ${allCoordinateRings.length} coordinate rings from ${Object.keys(tiles).length} tiles for feature ${featureId}`);
+    this.logger.log(
+      `Collected ${allCoordinateRings.length} coordinate rings from ${Object.keys(tiles).length} tiles for feature ${featureId}`,
+    );
 
     // Merge connecting rings into optimal polygon/multipolygon structure
     const mergedGeometry = this._mergeConnectingRings(allCoordinateRings);
@@ -1557,18 +1578,21 @@ export class MVTSource implements google.maps.MapType {
       type: 'Feature',
       id: featureId,
       properties,
-      geometry: mergedGeometry
+      geometry: mergedGeometry,
     };
   }
 
   /**
    * Merge connecting coordinate rings into optimal polygon/multipolygon geometry
    */
-  private _mergeConnectingRings(rings: number[][][]): { type: 'Polygon' | 'MultiPolygon', coordinates: number[][][] | number[][][][] } {
+  private _mergeConnectingRings(rings: number[][][]): {
+    type: 'Polygon' | 'MultiPolygon';
+    coordinates: number[][][] | number[][][][];
+  } {
     if (rings.length === 0) {
       return { type: 'Polygon', coordinates: [] };
     }
-    
+
     if (rings.length === 1) {
       return { type: 'Polygon', coordinates: rings };
     }
@@ -1585,12 +1609,12 @@ export class MVTSource implements google.maps.MapType {
 
       // Group polygons that touch or overlap
       const polygonGroups = this._groupTouchingPolygons(polygons);
-      
+
       this.logger.log(`Grouped ${polygons.length} polygons into ${polygonGroups.length} groups`);
 
       // Merge each group and collect results
       const mergedPolygons: Feature<Polygon | MultiPolygon>[] = [];
-      
+
       for (const group of polygonGroups) {
         if (group.length === 1) {
           // Single polygon, no merging needed
@@ -1609,10 +1633,9 @@ export class MVTSource implements google.maps.MapType {
 
       // Convert back to GeoJSON geometry format
       const result = this._convertTurfPolygonsToGeometry(mergedPolygons);
-      
+
       this.logger.log(`Merged ${rings.length} rings into ${result.type} with ${mergedPolygons.length} polygon groups`);
       return result;
-
     } catch (error) {
       this.logger.error('Error in polygon merging, falling back to simple approach:', error);
       // Fallback to original simple approach - return as single polygon
@@ -1626,7 +1649,7 @@ export class MVTSource implements google.maps.MapType {
    */
   private _calculateRingArea(ring: number[][]): number {
     if (ring.length < 3) return 0;
-    
+
     let area = 0;
     for (let i = 0; i < ring.length - 1; i++) {
       const [x1, y1] = ring[i];
@@ -1641,15 +1664,15 @@ export class MVTSource implements google.maps.MapType {
    */
   private _ensureRingClosure(ring: number[][]): number[][] {
     if (ring.length < 3) return ring;
-    
+
     const firstPoint = ring[0];
     const lastPoint = ring[ring.length - 1];
-    
+
     // Check if the ring is already closed
     if (firstPoint[0] === lastPoint[0] && firstPoint[1] === lastPoint[1]) {
       return ring;
     }
-    
+
     // Close the ring by adding the first point at the end
     return [...ring, firstPoint];
   }
@@ -1661,18 +1684,18 @@ export class MVTSource implements google.maps.MapType {
     if (polygons.length <= 1) return [polygons];
 
     // Cache coordinate extraction for performance
-    const polygonCoords = polygons.map(poly => this._getAllCoordinates(poly));
-    
+    const polygonCoords = polygons.map((poly) => this._getAllCoordinates(poly));
+
     // Union-Find data structure for efficient grouping
     const parent = Array.from({ length: polygons.length }, (_, i) => i);
-    
+
     const find = (x: number): number => {
       if (parent[x] !== x) {
         parent[x] = find(parent[x]); // Path compression
       }
       return parent[x];
     };
-    
+
     const union = (x: number, y: number): void => {
       const rootX = find(x);
       const rootY = find(y);
@@ -1699,14 +1722,19 @@ export class MVTSource implements google.maps.MapType {
       }
       groups.get(root)!.push(polygons[i]);
     }
-    
+
     return Array.from(groups.values());
   }
 
   /**
    * Check if two polygons touch or overlap (including point-touching)
    */
-  private _polygonsTouchOrOverlap(poly1: Feature<Polygon>, poly2: Feature<Polygon>, coords1: number[][], coords2: number[][]): boolean {
+  private _polygonsTouchOrOverlap(
+    poly1: Feature<Polygon>,
+    poly2: Feature<Polygon>,
+    coords1: number[][],
+    coords2: number[][],
+  ): boolean {
     try {
       // Method 1: Direct coordinate comparison using pre-extracted coordinates
       if (this._hasSharedCoordinates(coords1, coords2)) {
@@ -1717,7 +1745,7 @@ export class MVTSource implements google.maps.MapType {
       const intersection = intersect(poly1, poly2);
       return intersection !== null && intersection !== undefined;
     } catch (error) {
-      this.logger.warn('Error checking polygon overlap, assuming they don\'t touch:', error);
+      this.logger.warn("Error checking polygon overlap, assuming they don't touch:", error);
       return false;
     }
   }
@@ -1732,14 +1760,14 @@ export class MVTSource implements google.maps.MapType {
       for (const coord of coords1) {
         coordSet1.add(`${coord[0]},${coord[1]}`);
       }
-      
+
       // Check if any coordinate from coords2 matches coords1
       for (const coord of coords2) {
         if (coordSet1.has(`${coord[0]},${coord[1]}`)) {
           return true;
         }
       }
-      
+
       return false;
     } catch (error) {
       this.logger.warn('Error checking shared coordinates:', error);
@@ -1752,11 +1780,11 @@ export class MVTSource implements google.maps.MapType {
    */
   private _getAllCoordinates(polygonFeature: Feature<Polygon>): number[][] {
     const coordinates: number[][] = [];
-    
+
     try {
       if (polygonFeature.geometry && polygonFeature.geometry.coordinates) {
         const rings = polygonFeature.geometry.coordinates;
-        
+
         for (const ring of rings) {
           for (const coord of ring) {
             coordinates.push([coord[0], coord[1]]);
@@ -1766,7 +1794,7 @@ export class MVTSource implements google.maps.MapType {
     } catch (error) {
       this.logger.warn('Error extracting coordinates:', error);
     }
-    
+
     return coordinates;
   }
 
@@ -1781,13 +1809,12 @@ export class MVTSource implements google.maps.MapType {
     try {
       // Reduce approach for cleaner code
       return polygons.slice(1).reduce<Feature<Polygon | MultiPolygon, Properties>>((result, currentPolygon, index) => {
-        
         const unionResult = union(result, currentPolygon);
         if (!unionResult) {
           this.logger.warn(`Failed to union polygon ${index}, keeping separate`);
           return result; // Keep previous result instead of failing completely
         }
-        
+
         return unionResult;
       }, polygons[0]);
     } catch (error) {
@@ -1799,24 +1826,27 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Convert Turf.js polygon features back to proper GeoJSON geometry
    */
-  private _convertTurfPolygonsToGeometry(polygons: Feature<Polygon | MultiPolygon>[]): { type: 'Polygon' | 'MultiPolygon', coordinates: number[][][] | number[][][][] } {
+  private _convertTurfPolygonsToGeometry(polygons: Feature<Polygon | MultiPolygon>[]): {
+    type: 'Polygon' | 'MultiPolygon';
+    coordinates: number[][][] | number[][][][];
+  } {
     // Early returns for performance
     if (polygons.length === 0) {
       return { type: 'Polygon', coordinates: [] };
     }
-    
+
     if (polygons.length === 1) {
       // Single result - return as-is with proper typing
       const { geometry } = polygons[0];
       return {
         type: geometry.type as 'Polygon' | 'MultiPolygon',
-        coordinates: geometry.coordinates as number[][][] | number[][][][]
+        coordinates: geometry.coordinates as number[][][] | number[][][][],
       };
     }
-    
+
     // Multiple polygons - efficiently build MultiPolygon
     const multiPolygonCoords: number[][][][] = [];
-    
+
     for (const { geometry } of polygons) {
       if (geometry.type === 'Polygon') {
         multiPolygonCoords.push(geometry.coordinates);
@@ -1825,22 +1855,21 @@ export class MVTSource implements google.maps.MapType {
         multiPolygonCoords.push(...geometry.coordinates);
       }
     }
-    
+
     return {
       type: 'MultiPolygon',
-      coordinates: multiPolygonCoords
+      coordinates: multiPolygonCoords,
     };
   }
-
 
   /**
    * Convert PBF coordinates to GeoJSON geographic coordinates
    */
   private _convertPBFCoordinatesToGeoJSON(
-    pbfCoordinates: any[], 
-    tileContext: TileContext, 
+    pbfCoordinates: any[],
+    tileContext: TileContext,
     divisor: number,
-    geometryType: number
+    geometryType: number,
   ): number[][] | number[][][] | null {
     const tileCoord = this.getTileObject(tileContext.id);
     const z = tileCoord.z;
@@ -1848,33 +1877,36 @@ export class MVTSource implements google.maps.MapType {
     const y = tileCoord.y;
     const tileSize = tileContext.tileSize;
 
-    this.logger.log(`Converting coordinates for tile ${z}/${x}/${y}, divisor: ${divisor}, tileSize: ${tileSize}, geometryType: ${geometryType}`);
+    this.logger.log(
+      `Converting coordinates for tile ${z}/${x}/${y}, divisor: ${divisor}, tileSize: ${tileSize}, geometryType: ${geometryType}`,
+    );
 
     try {
       const convertPoint = (point: any): [number, number] => {
         // Convert from PBF extent coordinates to tile pixel coordinates
         const pixelX = point.x / divisor;
         const pixelY = point.y / divisor;
-        
+
         // Convert to tile-relative coordinates (0-1)
         const tileX = pixelX / tileSize;
         const tileY = pixelY / tileSize;
-        
+
         // Convert to global tile coordinates
         const globalX = x + tileX;
         const globalY = y + tileY;
-        
+
         // Convert to geographic coordinates using Web Mercator projection
         const tileCount = 1 << z; // Faster than Math.pow(2, z)
         const lon = (globalX / tileCount) * 360 - 180;
-        const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * globalY / tileCount))) * 180 / Math.PI;
-        
+        const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * globalY) / tileCount))) * 180) / Math.PI;
+
         return [lon, lat]; // GeoJSON format: [longitude, latitude]
       };
 
-      if (geometryType === 1) { // Point
+      if (geometryType === 1) {
+        // Point
         // For points, pbfCoordinates is array of point groups
-        const result = pbfCoordinates.map(pointGroup => {
+        const result = pbfCoordinates.map((pointGroup) => {
           if (Array.isArray(pointGroup) && pointGroup.length > 0) {
             return convertPoint(pointGroup[0]);
           }
@@ -1882,19 +1914,17 @@ export class MVTSource implements google.maps.MapType {
         });
         this.logger.log(`Converted ${result.length} points`);
         return result;
-      } else if (geometryType === 2) { // LineString  
+      } else if (geometryType === 2) {
+        // LineString
         // For linestrings, pbfCoordinates is array of line parts
-        const result = pbfCoordinates.map(lineString => 
-          lineString.map(convertPoint)
-        );
-        this.logger.log(`Converted ${result.length} linestrings with ${result.map(ls => ls.length)} points each`);
+        const result = pbfCoordinates.map((lineString) => lineString.map(convertPoint));
+        this.logger.log(`Converted ${result.length} linestrings with ${result.map((ls) => ls.length)} points each`);
         return result;
-      } else if (geometryType === 3) { // Polygon
+      } else if (geometryType === 3) {
+        // Polygon
         // For polygons, pbfCoordinates is array of rings
-        const result = pbfCoordinates.map(ring => 
-          ring.map(convertPoint)
-        );
-        this.logger.log(`Converted polygon with ${result.length} rings, ring sizes: ${result.map(r => r.length)}`);
+        const result = pbfCoordinates.map((ring) => ring.map(convertPoint));
+        this.logger.log(`Converted polygon with ${result.length} rings, ring sizes: ${result.map((r) => r.length)}`);
         return result;
       }
     } catch (error) {
@@ -1902,7 +1932,7 @@ export class MVTSource implements google.maps.MapType {
         tileId: tileContext.id,
         geometryType,
         coordinatesLength: pbfCoordinates.length,
-        firstCoord: pbfCoordinates[0]
+        firstCoord: pbfCoordinates[0],
       });
     }
 
@@ -1925,43 +1955,43 @@ export class MVTSource implements google.maps.MapType {
    * Call feature selection callback
    */
   private async _callFeatureSelectionCallback(
-    featureId: string | number, 
-    originalFeature: import('@mapbox/vector-tile').VectorTileFeature, 
-    selected: boolean
+    featureId: string | number,
+    originalFeature: import('@mapbox/vector-tile').VectorTileFeature,
+    selected: boolean,
   ): Promise<void> {
     if (!this._featureSelectionCallback) return;
 
     try {
       let featureData = this._replacedFeatures[featureId];
-      
+
       if (!featureData && selected) {
         if (this._getReplacementFeature) {
           // Check if there's already a pending request for this feature
           if (this._pendingReplacementRequests.has(featureId)) {
             return;
           }
-          
+
           const feature = this._featureIndex.get(featureId);
           if (feature) {
             const tiles = feature.getTiles();
             const firstTileId = Object.keys(tiles)[0];
             if (firstTileId && tiles[firstTileId]) {
               const originalVectorFeature = tiles[firstTileId].vectorTileFeature;
-              
+
               // Create AbortController to handle cancellation
               const abortController = new AbortController();
               this._pendingReplacementRequests.set(featureId, abortController);
-              
+
               try {
                 const replacementResult = await Promise.resolve(
-                  this._getReplacementFeature(originalVectorFeature, featureId)
+                  this._getReplacementFeature(originalVectorFeature, featureId),
                 );
-                
+
                 // Check if the request was aborted or feature is no longer selected
                 if (abortController.signal.aborted || !this._selectedFeatureIds.has(featureId)) {
                   return; // Don't apply the result if feature was deselected
                 }
-                
+
                 if (replacementResult) {
                   this._replacedFeatures[featureId] = replacementResult;
                   this._addGeoJSONOverlay(featureId, replacementResult);
@@ -2001,8 +2031,8 @@ export class MVTSource implements google.maps.MapType {
           properties: originalFeature.properties || {},
           geometry: {
             type: 'Point',
-            coordinates: []
-          }
+            coordinates: [],
+          },
         };
       }
 
@@ -2017,7 +2047,7 @@ export class MVTSource implements google.maps.MapType {
    */
   dispose(): void {
     this.logger.log('Disposing MVTSource and cleaning up all resources');
-    
+
     // Remove self from map's overlay types
     try {
       const overlayIndex = this.map.overlayMapTypes.getArray().indexOf(this);
@@ -2028,17 +2058,17 @@ export class MVTSource implements google.maps.MapType {
     } catch (error) {
       this.logger.warn('Error removing MVTSource from overlayMapTypes:', error);
     }
-    
+
     // Remove all event listeners
-    this._eventListeners.forEach(listener => {
+    this._eventListeners.forEach((listener) => {
       if (listener && typeof listener.remove === 'function') {
         listener.remove();
       }
     });
     this._eventListeners = [];
-    
+
     // Clear all GeoJSON overlays
-    Object.values(this._geoJSONOverlays).forEach(overlay => {
+    Object.values(this._geoJSONOverlays).forEach((overlay) => {
       try {
         this.map.data.remove(overlay);
       } catch (error) {
@@ -2046,35 +2076,35 @@ export class MVTSource implements google.maps.MapType {
       }
     });
     this._geoJSONOverlays = {};
-    
+
     this.deselectAllFeatures();
-    
+
     // Cancel any remaining pending replacement requests (should already be done by deselectAllFeatures)
     this._pendingReplacementRequests.forEach((controller) => {
       controller.abort();
     });
     this._pendingReplacementRequests.clear();
-    
+
     this._featureIndex.clear();
     this._selectedFeatureIds.clear();
     this._hoveredFeatureIds.clear();
     this._tilesDrawn = {};
     this._visibleTiles = {};
     this._replacedFeatures = {};
-    
+
     this._pendingRedraws.clear();
     if (this._redrawDebounceTimer) {
       clearTimeout(this._redrawDebounceTimer);
       this._redrawDebounceTimer = null;
     }
-    
-    Object.values(this.mVTLayers).forEach(layer => {
+
+    Object.values(this.mVTLayers).forEach((layer) => {
       if (layer.dispose) {
         layer.dispose();
       }
     });
     this.mVTLayers = {};
-    
+
     this.logger.log('MVTSource disposal complete');
   }
 }
