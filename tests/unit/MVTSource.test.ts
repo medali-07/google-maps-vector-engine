@@ -1,7 +1,7 @@
 // Mock the mapbox-vector-tile module to avoid ESM issues
 jest.mock('@mapbox/vector-tile', () => ({
   VectorTile: jest.fn(),
-  VectorTileFeature: jest.fn()
+  VectorTileFeature: jest.fn(),
 }));
 
 jest.mock('pbf', () => jest.fn());
@@ -15,13 +15,13 @@ const mockMap = {
     getArray: jest.fn(() => []),
     removeAt: jest.fn(),
     push: jest.fn(),
-    insertAt: jest.fn()
+    insertAt: jest.fn(),
   },
   data: {
     addListener: jest.fn(() => ({ remove: jest.fn() })),
-    remove: jest.fn()
+    remove: jest.fn(),
   },
-  addListener: jest.fn(() => ({ remove: jest.fn() }))
+  addListener: jest.fn(() => ({ remove: jest.fn() })),
 } as any;
 
 // Mock console methods to avoid noise in tests
@@ -29,7 +29,7 @@ global.console = {
   ...console,
   log: jest.fn(),
   warn: jest.fn(),
-  error: jest.fn()
+  error: jest.fn(),
 };
 
 describe('MVTSource Race Condition Fix', () => {
@@ -39,14 +39,14 @@ describe('MVTSource Race Condition Fix', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     mockGetReplacementFeature = jest.fn();
     mockFeatureSelectionCallback = jest.fn();
 
     mvtSource = new MVTSource(mockMap, {
       url: 'https://example.com/{z}/{x}/{y}.pbf',
       getReplacementFeature: mockGetReplacementFeature,
-      featureSelectionCallback: mockFeatureSelectionCallback
+      featureSelectionCallback: mockFeatureSelectionCallback,
     });
   });
 
@@ -64,7 +64,7 @@ describe('MVTSource Race Condition Fix', () => {
           type: 'Feature',
           id: 'test-feature',
           properties: { name: 'Test Feature' },
-          geometry: { type: 'Point', coordinates: [0, 0] }
+          geometry: { type: 'Point', coordinates: [0, 0] },
         });
       }, 100);
     });
@@ -77,7 +77,7 @@ describe('MVTSource Race Condition Fix', () => {
       properties: { id: 'test-feature' },
       loadGeometry: jest.fn(),
       bbox: jest.fn(),
-      toGeoJSON: jest.fn()
+      toGeoJSON: jest.fn(),
     };
 
     const mockTileContext = {
@@ -88,7 +88,7 @@ describe('MVTSource Race Condition Fix', () => {
       x: 1,
       y: 1,
       tileSize: 256,
-      geoTransform: jest.fn()
+      geoTransform: jest.fn(),
     };
 
     // Simulate feature being registered and selected
@@ -98,13 +98,13 @@ describe('MVTSource Race Condition Fix', () => {
       tileContext: mockTileContext,
       style: { fillColor: '#000000' },
       selected: false,
-      featureId: 'test-feature'
+      featureId: 'test-feature',
     });
 
     // Access private methods for testing
     const selectFeature = (mvtSource as any)._selectFeature.bind(mvtSource);
     const deselectFeature = (mvtSource as any)._deselectFeature.bind(mvtSource);
-    
+
     // Register the feature in the index
     (mvtSource as any)._featureIndex.set('test-feature', feature);
 
@@ -118,7 +118,7 @@ describe('MVTSource Race Condition Fix', () => {
     deselectFeature('test-feature');
 
     // Wait for the async operation to complete
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
     // The callback should only be called for the deselection, not for the completed replacement
     expect(mockFeatureSelectionCallback).toHaveBeenCalledTimes(1);
@@ -139,7 +139,7 @@ describe('MVTSource Race Condition Fix', () => {
             type: 'Feature',
             id: 'test-feature',
             properties: { name: 'Test Feature' },
-            geometry: { type: 'Point', coordinates: [0, 0] }
+            geometry: { type: 'Point', coordinates: [0, 0] },
           });
         }, 50);
       });
@@ -151,7 +151,7 @@ describe('MVTSource Race Condition Fix', () => {
       properties: { id: 'test-feature' },
       loadGeometry: jest.fn(),
       bbox: jest.fn(),
-      toGeoJSON: jest.fn()
+      toGeoJSON: jest.fn(),
     };
 
     const mockTileContext = {
@@ -162,7 +162,7 @@ describe('MVTSource Race Condition Fix', () => {
       x: 1,
       y: 1,
       tileSize: 256,
-      geoTransform: jest.fn()
+      geoTransform: jest.fn(),
     };
 
     const feature = new MVTFeature({
@@ -171,7 +171,7 @@ describe('MVTSource Race Condition Fix', () => {
       tileContext: mockTileContext,
       style: { fillColor: '#000000' },
       selected: false,
-      featureId: 'test-feature'
+      featureId: 'test-feature',
     });
 
     const selectFeature = (mvtSource as any)._selectFeature.bind(mvtSource);
@@ -180,13 +180,13 @@ describe('MVTSource Race Condition Fix', () => {
 
     // Select the feature
     selectFeature('test-feature');
-    
-    // Quickly deselect and select again 
+
+    // Quickly deselect and select again
     deselectFeature('test-feature');
     selectFeature('test-feature');
 
     // Wait for any async operations
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Should handle this gracefully without errors
     expect(callCount).toBeGreaterThan(0);
@@ -203,7 +203,7 @@ describe('MVTSource Race Condition Fix', () => {
       properties: { id: 'test-feature' },
       loadGeometry: jest.fn(),
       bbox: jest.fn(),
-      toGeoJSON: jest.fn()
+      toGeoJSON: jest.fn(),
     };
 
     const mockTileContext = {
@@ -214,7 +214,7 @@ describe('MVTSource Race Condition Fix', () => {
       x: 1,
       y: 1,
       tileSize: 256,
-      geoTransform: jest.fn()
+      geoTransform: jest.fn(),
     };
 
     const feature = new MVTFeature({
@@ -223,7 +223,7 @@ describe('MVTSource Race Condition Fix', () => {
       tileContext: mockTileContext,
       style: { fillColor: '#000000' },
       selected: false,
-      featureId: 'test-feature'
+      featureId: 'test-feature',
     });
 
     const selectFeature = (mvtSource as any)._selectFeature.bind(mvtSource);

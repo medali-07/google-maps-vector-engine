@@ -15,7 +15,7 @@ export class DebugLogger {
     MAGENTA: '\x1b[35m',
     CYAN: '\x1b[36m',
     WHITE: '\x1b[37m',
-    GRAY: '\x1b[90m'
+    GRAY: '\x1b[90m',
   };
 
   private constructor() {}
@@ -43,10 +43,10 @@ export class DebugLogger {
 
   private formatMessage(level: string, color: string, ...args: any[]): any[] {
     if (!this.debugEnabled && level !== 'error') return [];
-    
+
     const timestamp = new Date().toLocaleTimeString();
     const prefix = `${color}[${timestamp}] ${level}${this.COLORS.RESET}`;
-    
+
     return [prefix, ...args];
   }
 
@@ -78,7 +78,7 @@ export class DebugLogger {
    */
   public group(label: string, callback?: () => void): void {
     if (!this.debugEnabled) return;
-    
+
     console.group(`${this.COLORS.BRIGHT}${this.COLORS.MAGENTA}📁 ${label}${this.COLORS.RESET}`);
     if (callback) {
       try {
@@ -121,7 +121,7 @@ export class DebugLogger {
   public createPrefixedLogger(prefix: string) {
     const prefixColor = this.getComponentColor(prefix);
     const coloredPrefix = `${prefixColor}[${prefix}]${this.COLORS.RESET}`;
-    
+
     return {
       log: (...args: any[]) => {
         if (this.debugEnabled) {
@@ -155,8 +155,8 @@ export class DebugLogger {
         measureFeatureRender: (count: number) => {
           this.time(`Feature Render: ${count} features`);
           return () => this.timeEnd(`Feature Render: ${count} features`);
-        }
-      }
+        },
+      },
     };
   }
 
@@ -165,13 +165,13 @@ export class DebugLogger {
    */
   private getComponentColor(prefix: string): string {
     const colorMap: { [key: string]: string } = {
-      'MVTSource': this.COLORS.CYAN,
-      'MVTLayer': this.COLORS.GREEN,
-      'MVTFeature': this.COLORS.YELLOW,
-      'Mercator': this.COLORS.BLUE,
-      'ColorUtils': this.COLORS.MAGENTA,
+      MVTSource: this.COLORS.CYAN,
+      MVTLayer: this.COLORS.GREEN,
+      MVTFeature: this.COLORS.YELLOW,
+      Mercator: this.COLORS.BLUE,
+      ColorUtils: this.COLORS.MAGENTA,
     };
-    
+
     return colorMap[prefix] || this.COLORS.WHITE;
   }
 }

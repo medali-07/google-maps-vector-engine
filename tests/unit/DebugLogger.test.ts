@@ -1,4 +1,4 @@
-import { DebugLogger, createLogger, debugLogger } from '../../src/DebugLogger';
+import { createLogger, debugLogger } from '../../src/DebugLogger';
 
 describe('DebugLogger', () => {
   let consoleSpy: jest.SpyInstance;
@@ -29,20 +29,20 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('TestComponent'),
-        expect.stringContaining('Test message')
+        expect.stringContaining('Test message'),
       );
     });
 
     test('should support data objects in logging', () => {
       const logger = createLogger('TestComponent');
       const testData = { key: 'value', number: 42 };
-      
+
       logger.log('Test message', testData);
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('TestComponent'),
         expect.stringContaining('Test message'),
-        testData
+        testData,
       );
     });
   });
@@ -54,25 +54,25 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringMatching(/\[.*TestComponent.*\]/),
-        expect.stringContaining('Test message')
+        expect.stringContaining('Test message'),
       );
     });
 
     test('should assign different colors to different components', () => {
       const logger1 = createLogger('Component1');
       const logger2 = createLogger('Component2');
-      
+
       logger1.log('Message 1');
       logger2.log('Message 2');
 
       expect(consoleSpy).toHaveBeenCalledTimes(2);
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Component1'),
-        expect.stringContaining('Message 1')
+        expect.stringContaining('Message 1'),
       );
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Component2'),
-        expect.stringContaining('Message 2')
+        expect.stringContaining('Message 2'),
       );
     });
   });
@@ -80,11 +80,11 @@ describe('DebugLogger', () => {
   describe('Environment Detection', () => {
     test('should work in different environments', () => {
       const logger = createLogger('TestComponent');
-      
+
       // Test in production environment
       process.env.NODE_ENV = 'production';
       logger.log('Production message');
-      
+
       // Test in development environment
       process.env.NODE_ENV = 'development';
       logger.log('Development message');
@@ -100,7 +100,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('TestComponent'),
-        expect.stringContaining('Test environment message')
+        expect.stringContaining('Test environment message'),
       );
     });
   });
@@ -109,11 +109,11 @@ describe('DebugLogger', () => {
     test('should handle rapid logging efficiently', () => {
       const logger = createLogger('PerformanceTest');
       const startTime = performance.now();
-      
+
       for (let i = 0; i < 1000; i++) {
         logger.log(`Message ${i}`);
       }
-      
+
       const endTime = performance.now();
       expect(endTime - startTime).toBeLessThan(1000); // Should complete in under 1 second
     });
@@ -123,11 +123,11 @@ describe('DebugLogger', () => {
       for (let i = 0; i < 100; i++) {
         loggers.push(createLogger(`Component${i}`));
       }
-      
+
       loggers.forEach((logger, index) => {
         logger.log(`Message from component ${index}`);
       });
-      
+
       expect(consoleSpy).toHaveBeenCalledTimes(100);
     });
   });
@@ -136,7 +136,7 @@ describe('DebugLogger', () => {
     test('should create different loggers for different component names', () => {
       const logger1 = createLogger('Component1');
       const logger2 = createLogger('Component2');
-      
+
       expect(logger1).not.toBe(logger2);
     });
 
@@ -153,7 +153,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Component@#$%'),
-        expect.stringContaining('Special characters test')
+        expect.stringContaining('Special characters test'),
       );
     });
   });
@@ -188,10 +188,7 @@ describe('DebugLogger', () => {
         logger.log(longMessage);
       }).not.toThrow();
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('TestComponent'),
-        longMessage
-      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('TestComponent'), longMessage);
     });
 
     test('should handle multiple data arguments', () => {
@@ -207,13 +204,13 @@ describe('DebugLogger', () => {
         expect.stringContaining('Multiple data test'),
         data1,
         data2,
-        data3
+        data3,
       );
     });
 
     test('should handle concurrent logging from multiple components', () => {
       const promises = [];
-      
+
       for (let i = 0; i < 10; i++) {
         promises.push(
           new Promise<void>((resolve) => {
@@ -222,7 +219,7 @@ describe('DebugLogger', () => {
               logger.log(`Concurrent message ${i}`);
               resolve();
             }, Math.random() * 10);
-          })
+          }),
         );
       }
 

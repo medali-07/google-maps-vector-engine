@@ -21,7 +21,7 @@ import { MVTSource, DefaultStyles } from 'google-maps-vector-engine';
 
 const map = new google.maps.Map(document.getElementById('map'), {
   center: { lat: 46.52, lng: 6.57 },
-  zoom: 9
+  zoom: 9,
 });
 
 const mvtSource = new MVTSource(map, {
@@ -33,14 +33,14 @@ const mvtSource = new MVTSource(map, {
     if (event.feature) {
       console.log('Clicked:', event.feature.properties);
     }
-  }
+  },
 });
 ```
 
 ## ✨ Features
 
 - **🖱️ Fully Interactive** - Click, hover, and selection
-- **🎨 Dynamic Styling** - Real-time data-driven visualizations  
+- **🎨 Dynamic Styling** - Real-time data-driven visualizations
 - **🚀 High Performance** - O(1) lookups and smooth rendering
 - **💪 TypeScript** - Complete type safety
 - **📱 Production Ready** - Memory management and optimizations
@@ -55,15 +55,13 @@ const style = {
   lineWidth: 2,
   selected: {
     fillStyle: 'rgba(255, 140, 0, 0.8)',
-    lineWidth: 3
-  }
+    lineWidth: 3,
+  },
 };
 
 // Dynamic style
 const styleFunction = (feature) => {
-  return feature.properties.important 
-    ? { fillStyle: 'red' }
-    : { fillStyle: 'blue' };
+  return feature.properties.important ? { fillStyle: 'red' } : { fillStyle: 'blue' };
 };
 
 mvtSource.setStyle(styleFunction);
@@ -77,7 +75,7 @@ mvtSource.setSelectedFeatures(['feature1', 'feature2']);
 const selectedIds = mvtSource.getSelectedFeatureIds();
 const selectedFeatures = mvtSource.getSelectedFeatures();
 
-// Layer management  
+// Layer management
 mvtSource.setVisibleLayers(['boundaries', 'roads']);
 const visibleLayers = mvtSource.getVisibleLayers();
 
@@ -92,13 +90,13 @@ mvtSource.dispose();
 
 ## 📚 Documentation
 
-| Guide | Description |
-|-------|-------------|
-| **[📖 API Reference](./docs/API.md)** | Complete API documentation |
-| **[💡 Examples](./docs/EXAMPLES.md)** | Practical examples and use cases |
-| **[⚡ Performance](./docs/PERFORMANCE.md)** | Optimization strategies |
-| **[🔧 Troubleshooting](./docs/TROUBLESHOOTING.md)** | Common issues and solutions |
-| **[🚀 Advanced](./docs/ADVANCED.md)** | Complex patterns and integrations |
+| Guide                                               | Description                       |
+| --------------------------------------------------- | --------------------------------- |
+| **[📖 API Reference](./docs/API.md)**               | Complete API documentation        |
+| **[💡 Examples](./docs/EXAMPLES.md)**               | Practical examples and use cases  |
+| **[⚡ Performance](./docs/PERFORMANCE.md)**         | Optimization strategies           |
+| **[🔧 Troubleshooting](./docs/TROUBLESHOOTING.md)** | Common issues and solutions       |
+| **[🚀 Advanced](./docs/ADVANCED.md)**               | Complex patterns and integrations |
 
 ## 📦 Requirements
 

@@ -124,14 +124,14 @@ export interface MVTSourceOptions {
   customDraw?: CustomDrawFunction;
   getReplacementFeature?: FeatureReplacementFunction;
   featureSelectionCallback?: FeatureSelectionCallback;
-  
+
   // Tile availability manifest (optional)
   tileAvailabilityManifest?: TileAvailabilitySource;
-  
+
   // Event handling configuration
   onClick?: ClickEventCallback;
   onMouseHover?: HoverEventCallback;
-  
+
   // Selection behavior configuration
   multipleSelection?: boolean;
   toggleSelection?: boolean;
@@ -163,7 +163,7 @@ export type CustomDrawFunction = (
   tileContext: TileContext,
   tile: TileFeatureData,
   style: FeatureStyle,
-  feature: any // MVTFeature - using any to avoid circular dependency
+  feature: any, // MVTFeature - using any to avoid circular dependency
 ) => void;
 
 export type FilterFunction = (feature: VectorTileFeature, tileContext: TileContext) => boolean;
@@ -190,7 +190,7 @@ export interface IMVTFeature {
   style: FeatureStyle;
   type: number;
   properties: Record<string, any>;
-  
+
   addTileFeature(vectorTileFeature: VectorTileFeature, tileContext: TileContext): void;
   getTiles(): Record<string, TileFeatureData>;
   getTile(tileContext: TileContext): TileFeatureData;
@@ -206,11 +206,7 @@ export interface IMVTFeature {
 
 export interface IMVTLayer {
   name: string;
-  parseVectorTileFeatures(
-    mVTSource: any, 
-    vectorTileFeatures: VectorTileFeature[], 
-    tileContext: TileContext
-  ): void;
+  parseVectorTileFeatures(mVTSource: any, vectorTileFeatures: VectorTileFeature[], tileContext: TileContext): void;
   handleClickEvent(event: MVTMouseEvent, mVTSource: any): MVTMouseEvent;
   setStyle(style: FeatureStyle | FeatureStyleFunction): void;
   setSelected(featureId: string | number): void;
@@ -221,5 +217,5 @@ export interface IMVTLayer {
 export enum GeometryType {
   Point = 1,
   LineString = 2,
-  Polygon = 3
+  Polygon = 3,
 }

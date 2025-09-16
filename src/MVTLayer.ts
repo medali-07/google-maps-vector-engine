@@ -10,20 +10,20 @@ import {
   FeatureStyle,
   FeatureStyleFunction,
   FilterFunction,
-  GeometryType
+  GeometryType,
 } from './types';
 
 /**
  * MVTLayer - Manages individual vector tile layers and their features
  * Part of google-maps-vector-engine
- * 
+ *
  * Handles feature parsing, rendering, and interaction logic for a single layer
  * with proper z-ordering and efficient click detection.
  */
 export class MVTLayer {
   public name: string;
   public style: FeatureStyle | FeatureStyleFunction;
-  
+
   private _lineClickTolerance = 2;
   private _getIDForLayerFeature: (feature: VectorTileFeature) => string | number;
   private _filter: FilterFunction | false;
@@ -48,11 +48,11 @@ export class MVTLayer {
   parseVectorTileFeatures(
     mVTSource: any, // MVTSource
     vectorTileFeatures: VectorTileFeature[],
-    tileContext: TileContext
+    tileContext: TileContext,
   ): void {
     this._canvasAndMVTFeatures[tileContext.id] = {
       canvas: tileContext.canvas,
-      features: []
+      features: [],
     };
 
     if (!vectorTileFeatures || !Array.isArray(vectorTileFeatures)) {
@@ -62,7 +62,7 @@ export class MVTLayer {
     }
 
     const features: MVTFeature[] = [];
-    
+
     for (let i = 0; i < vectorTileFeatures.length; i++) {
       const vectorTileFeature = vectorTileFeatures[i];
       const feature = this._parseVectorTileFeature(mVTSource, vectorTileFeature, tileContext, i);
@@ -82,7 +82,7 @@ export class MVTLayer {
     mVTSource: any,
     vectorTileFeature: VectorTileFeature,
     tileContext: TileContext,
-    index: number
+    index: number,
   ): MVTFeature | null {
     if (this._filter && typeof this._filter === 'function') {
       if (this._filter(vectorTileFeature, tileContext) === false) {
@@ -98,7 +98,7 @@ export class MVTLayer {
 
     if (!mVTFeature) {
       const baseStyle = this._getFeatureStyle(vectorTileFeature);
-      
+
       const options = {
         mVTSource,
         vectorTileFeature,
@@ -106,9 +106,9 @@ export class MVTLayer {
         style: baseStyle,
         selected: shouldBeSelected,
         featureId,
-        customDraw: this._customDraw
+        customDraw: this._customDraw,
       };
-      
+
       mVTFeature = new MVTFeature(options);
       mVTFeature.hovered = shouldBeHovered;
       this._mVTFeatures[featureId] = mVTFeature;
@@ -116,7 +116,7 @@ export class MVTLayer {
       const baseStyle = this._getFeatureStyle(vectorTileFeature);
       mVTFeature.setStyle(baseStyle);
       mVTFeature.addTileFeature(vectorTileFeature, tileContext);
-      
+
       if (mVTFeature.selected !== shouldBeSelected) {
         mVTFeature.setSelected(shouldBeSelected);
       }
@@ -149,7 +149,7 @@ export class MVTLayer {
       }
     }
 
-    [...regularFeatures, ...hoveredFeatures, ...selectedFeatures].forEach(feature => {
+    [...regularFeatures, ...hoveredFeatures, ...selectedFeatures].forEach((feature) => {
       feature.draw(tileContext);
     });
   }
@@ -169,18 +169,18 @@ export class MVTLayer {
    */
   setStyle(style: FeatureStyle | FeatureStyleFunction): void {
     this.style = style;
-    
-    Object.values(this._mVTFeatures).forEach(mVTFeature => {
+
+    Object.values(this._mVTFeatures).forEach((mVTFeature) => {
       const firstTileId = Object.keys(mVTFeature.tiles)[0];
       if (firstTileId && mVTFeature.tiles[firstTileId]) {
         const vectorTileFeature = mVTFeature.tiles[firstTileId].vectorTileFeature;
         const newStyle = this._getFeatureStyle(vectorTileFeature);
-        
+
         const wasSelected = mVTFeature.selected;
         const wasHovered = mVTFeature.hovered;
-        
+
         mVTFeature.setStyle(newStyle);
-        
+
         mVTFeature.selected = wasSelected;
         mVTFeature.hovered = wasHovered;
       }
@@ -222,14 +222,14 @@ export class MVTLayer {
    * Find clicked feature with priority for selected features
    */
   private _findClickedFeature(
-    event: MVTMouseEvent, 
-    mVTFeatures: MVTFeature[], 
-    _mVTSource: any
+    event: MVTMouseEvent,
+    mVTFeatures: MVTFeature[],
+    _mVTSource: any,
   ): MVTFeature | undefined {
     this.selectedFeature = null;
     this.minDistance = Number.POSITIVE_INFINITY;
-    
-    const selectedFeatures = mVTFeatures.filter(f => f.selected);
+
+    const selectedFeatures = mVTFeatures.filter((f) => f.selected);
     if (selectedFeatures.length > 0) {
       this._checkFeaturesForClick(event, selectedFeatures);
       if (this.selectedFeature) {
@@ -247,7 +247,7 @@ export class MVTLayer {
   private _checkFeaturesForClick(event: MVTMouseEvent, features: MVTFeature[]): void {
     for (let i = features.length - 1; i >= 0; i--) {
       const feature = features[i];
-      
+
       if (this._isFeatureClicked(event, feature)) {
         this.selectedFeature = feature;
         if (this.minDistance === 0) {
@@ -289,12 +289,12 @@ export class MVTLayer {
    */
   private _checkPointClick(event: MVTMouseEvent, feature: MVTFeature): boolean {
     const paths = feature.getPaths(event.tileContext!);
-    
+
     for (const path of paths) {
       if (path.length > 0) {
         const point = path[0];
         const radius = feature.style.radius || 3;
-        
+
         if (Mercator.inCircle(point.x, point.y, radius, event.tilePoint!.x, event.tilePoint!.y)) {
           this.minDistance = 0;
           return true;
@@ -309,18 +309,18 @@ export class MVTLayer {
    */
   private _checkLineClick(event: MVTMouseEvent, feature: MVTFeature): boolean {
     const paths = feature.getPaths(event.tileContext!);
-    
+
     for (const path of paths) {
       const distance = Mercator.getDistanceFromLine(event.tilePoint!, path);
       const lineWidth = feature.style.lineWidth || 1;
       const tolerance = lineWidth / 2 + this._lineClickTolerance;
-      
+
       if (distance < tolerance && distance < this.minDistance) {
         this.minDistance = distance;
         return true;
       }
     }
-    
+
     return false;
   }
 
@@ -350,12 +350,11 @@ export class MVTLayer {
    */
   dispose(): void {
     // Clear all features
-    Object.values(this._mVTFeatures).forEach(feature => {
+    Object.values(this._mVTFeatures).forEach((feature) => {
       feature.dispose();
     });
-    
+
     this._mVTFeatures = {};
     this._canvasAndMVTFeatures = {};
   }
 }
-
