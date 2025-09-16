@@ -1,6 +1,6 @@
 {
   "name": "google-maps-vector-engine",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "High-performance TypeScript engine for rendering Mapbox Vector Tiles (MVT/PBF) on Google Maps with advanced features including fast feature lookups, interactive selections, dynamic styling, and optimized rendering.",
   "main": "dist/index.js",
   "module": "dist/esm/index.js",
@@ -79,7 +79,16 @@
     "node": ">=16.0.0"
   },
   "sideEffects": false,
-  "funding": "https://ko-fi.com/medalihachicha",
+  "funding": [
+    {
+      "type": "buy-me-a-coffee",
+      "url": "https://buymeacoffee.com/medali.07"
+    },
+    {
+      "type": "ko-fi",
+      "url": "https://ko-fi.com/medalihachicha"
+    }
+  ],
   "publishConfig": {
     "access": "public"
   }

@@ -6,6 +6,8 @@
 
 > **Render Mapbox Vector Tiles (PBF) on Google Maps with full interactivity.**
 
+☕ **Support this project:** [Buy me a coffee](https://buymeacoffee.com/medali.07) • [Ko-fi](https://ko-fi.com/medalihachicha)
+
 Google Maps doesn't natively support vector tiles (PBF format) - only raster tiles (PNG/JPEG). This library enables vector tile rendering with native-like performance and full interactivity impossible with static raster tiles.
 
 ## ⚡ Quick Start
