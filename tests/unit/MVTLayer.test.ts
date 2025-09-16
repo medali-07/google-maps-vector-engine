@@ -1,5 +1,6 @@
 import { MVTLayer } from '../../src/MVTLayer';
 import { MVTLayerOptions, GeometryType } from '../../src/types';
+import { VectorTileFeature } from '@mapbox/vector-tile';
 import {
   createMockMVTSource,
   createMockVectorTileFeature,
@@ -19,7 +20,8 @@ describe('MVTLayer', () => {
 
     layerOptions = {
       name: 'testLayer',
-      getIDForLayerFeature: (feature) => feature.id || feature.properties.id || 'default-id',
+      getIDForLayerFeature: (feature: VectorTileFeature): string =>
+        feature.id?.toString() || feature.properties.id.toString() || 'default-id',
       style: { fillStyle: 'rgba(0, 100, 200, 0.5)', strokeStyle: 'rgba(0, 100, 200, 1)' },
       filter: false,
       customDraw: false,

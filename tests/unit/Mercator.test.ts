@@ -1,8 +1,7 @@
 import { Mercator } from '../../src/Mercator';
-import { TileCoord, LatLng } from '../../src/types';
 
 // Mock Google Maps LatLng for testing
-const createMockLatLng = (lat: number, lng: number) =>
+const createMockLatLng = (lat: number, lng: number): google.maps.LatLng =>
   ({
     lat: () => lat,
     lng: () => lng,

@@ -89,7 +89,7 @@ export function createMockTileContext(overrides: Partial<TileContext> = {}): Til
   };
 }
 
-export function createMockMVTSource() {
+export function createMockMVTSource(): any {
   const map = new google.maps.Map(document.createElement('div'));
 
   return {
