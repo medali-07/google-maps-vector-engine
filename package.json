@@ -1,6 +1,6 @@
 {
   "name": "google-maps-vector-engine",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "High-performance TypeScript engine for rendering Mapbox Vector Tiles (MVT/PBF) on Google Maps with advanced features including fast feature lookups, interactive selections, dynamic styling, and optimized rendering.",
   "main": "dist/index.js",
   "module": "dist/esm/index.js",
