@@ -76,6 +76,7 @@ export class MVTSource implements google.maps.MapType {
   private _replacedFeatures: Record<string | number, GeoJSONFeature> = {};
   private _getReplacementFeature: FeatureReplacementFunction | undefined;
   private _featureSelectionCallback: FeatureSelectionCallback | undefined;
+  private _pendingReplacementRequests: Map<string | number, AbortController> = new Map();
   
   // Event handling
   private _onClickCallback: ((event: MVTMouseEvent) => void) | undefined;
@@ -938,6 +939,14 @@ export class MVTSource implements google.maps.MapType {
    */
   private _deselectFeature(featureId: string | number): void {
     this._selectedFeatureIds.delete(featureId);
+    
+    // Cancel any pending replacement requests for this feature
+    const pendingRequest = this._pendingReplacementRequests.get(featureId);
+    if (pendingRequest) {
+      pendingRequest.abort();
+      this._pendingReplacementRequests.delete(featureId);
+    }
+    
     const feature = this._featureIndex.get(featureId);
     
     if (feature) {
@@ -963,6 +972,12 @@ export class MVTSource implements google.maps.MapType {
     const selectedIds = Array.from(this._selectedFeatureIds);
     
     this._selectedFeatureIds.clear();
+    
+    // Cancel all pending replacement requests
+    this._pendingReplacementRequests.forEach((controller) => {
+      controller.abort();
+    });
+    this._pendingReplacementRequests.clear();
     
     selectedIds.forEach(featureId => {
       const feature = this._featureIndex.get(featureId);
@@ -1921,6 +1936,11 @@ export class MVTSource implements google.maps.MapType {
       
       if (!featureData && selected) {
         if (this._getReplacementFeature) {
+          // Check if there's already a pending request for this feature
+          if (this._pendingReplacementRequests.has(featureId)) {
+            return;
+          }
+          
           const feature = this._featureIndex.get(featureId);
           if (feature) {
             const tiles = feature.getTiles();
@@ -1928,10 +1948,19 @@ export class MVTSource implements google.maps.MapType {
             if (firstTileId && tiles[firstTileId]) {
               const originalVectorFeature = tiles[firstTileId].vectorTileFeature;
               
+              // Create AbortController to handle cancellation
+              const abortController = new AbortController();
+              this._pendingReplacementRequests.set(featureId, abortController);
+              
               try {
                 const replacementResult = await Promise.resolve(
                   this._getReplacementFeature(originalVectorFeature, featureId)
                 );
+                
+                // Check if the request was aborted or feature is no longer selected
+                if (abortController.signal.aborted || !this._selectedFeatureIds.has(featureId)) {
+                  return; // Don't apply the result if feature was deselected
+                }
                 
                 if (replacementResult) {
                   this._replacedFeatures[featureId] = replacementResult;
@@ -1945,7 +1974,14 @@ export class MVTSource implements google.maps.MapType {
                   }
                 }
               } catch (error) {
-                this.logger.warn(`Failed to fetch replacement feature for ${featureId}:`, error);
+                // Don't log abort errors as they are expected
+                if (error instanceof Error && error.name !== 'AbortError') {
+                  this.logger.warn(`Failed to fetch replacement feature for ${featureId}:`, error);
+                }
+                return;
+              } finally {
+                // Clean up the pending request
+                this._pendingReplacementRequests.delete(featureId);
               }
             }
           }
@@ -2012,6 +2048,12 @@ export class MVTSource implements google.maps.MapType {
     this._geoJSONOverlays = {};
     
     this.deselectAllFeatures();
+    
+    // Cancel any remaining pending replacement requests (should already be done by deselectAllFeatures)
+    this._pendingReplacementRequests.forEach((controller) => {
+      controller.abort();
+    });
+    this._pendingReplacementRequests.clear();
     
     this._featureIndex.clear();
     this._selectedFeatureIds.clear();
