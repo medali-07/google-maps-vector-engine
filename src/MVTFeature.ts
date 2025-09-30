@@ -8,7 +8,7 @@ import {
   GeometryType,
   CustomDrawFunction,
 } from './types';
-import { ColorUtils } from './ColorUtils';
+import { ContextPool } from './ContextPool';
 
 /**
  * MVTFeature - Represents individual vector features with drawing and interaction capabilities
@@ -27,11 +27,14 @@ export class MVTFeature {
   public type: number;
   public properties: Record<string, any>;
 
-  // Performance caching with size limits to prevent memory leaks
-  private _cachedContexts: Map<string, CanvasRenderingContext2D> = new Map();
+  private _contextPool: ContextPool = ContextPool.getInstance();
   private _cachedPaths: Map<string, Point[][]> = new Map();
-  private static readonly MAX_CACHE_SIZE = 50; // Limit cache size
+  private static readonly MAX_CACHE_SIZE = 50;
   private _draw: CustomDrawFunction;
+
+  private _path2dVersion: number = 0;
+  private _geometryHash: string | null = null;
+  private _contextsInUse: Map<string, CanvasRenderingContext2D> = new Map();
 
   constructor(options: MVTFeatureOptions) {
     this.mVTSource = options.mVTSource;
@@ -59,8 +62,9 @@ export class MVTFeature {
       paths2d: null,
     };
 
-    this._cachedContexts.delete(tileContext.id);
+    this._releaseAllContexts();
     this._cachedPaths.delete(tileContext.id);
+    this._invalidatePath2DCache();
   }
 
   /**
@@ -82,7 +86,7 @@ export class MVTFeature {
    */
   setStyle(style: FeatureStyle): void {
     this.style = style;
-    this._cachedContexts.clear();
+    this._releaseAllContexts();
   }
 
   /**
@@ -91,7 +95,7 @@ export class MVTFeature {
   setSelected(selected: boolean): void {
     if (this.selected !== selected) {
       this.selected = selected;
-      this._cachedContexts.clear();
+      this._releaseAllContexts();
     }
   }
 
@@ -171,67 +175,68 @@ export class MVTFeature {
   }
 
   /**
-   * Get cached canvas context with style
-   * Fixed: Use hash-based caching to avoid expensive JSON.stringify
+   * Get optimized canvas context using context pool for large operations only
    */
   private _getOptimizedContext2d(
     canvas: HTMLCanvasElement,
     style: FeatureStyle,
     tileId: string,
   ): CanvasRenderingContext2D {
-    const styleHash = this._createStyleHash(style);
-    const cacheKey = `${tileId}_${styleHash}`;
-    let context2d = this._cachedContexts.get(cacheKey);
-
-    if (!context2d) {
-      context2d = canvas.getContext('2d')!;
+    // Only use pooling for complex multi-tile features (5+ tiles)
+    const tileCount = Object.keys(this.tiles).length;
+    if (tileCount < 5) {
+      const context2d = canvas.getContext('2d')!;
       this._applyStyleToContext(context2d, style);
+      return context2d;
+    }
 
-      if (this._cachedContexts.size >= MVTFeature.MAX_CACHE_SIZE) {
-        const firstKey = this._cachedContexts.keys().next().value;
-        if (firstKey !== undefined) {
-          this._cachedContexts.delete(firstKey);
-        }
-      }
-
-      this._cachedContexts.set(cacheKey, context2d);
+    const styleHash = ContextPool.createStyleHash(style);
+    const cacheKey = `${tileId}_${styleHash}`;
+    
+    let context2d = this._contextsInUse.get(cacheKey);
+    
+    if (!context2d) {
+      context2d = this._contextPool.acquire(canvas, style, styleHash);
+      this._contextsInUse.set(cacheKey, context2d);
     }
 
     return context2d;
   }
 
   /**
-   * Create efficient hash for style object to avoid JSON.stringify performance issues
+   * Apply style properties directly to context (lightweight version)
    */
-  private _createStyleHash(style: FeatureStyle): string {
-    return [
-      style.fillStyle ?? '',
-      style.fillOpacity?.toString() ?? '',
-      style.strokeStyle ?? '',
-      style.lineWidth?.toString() ?? '',
-      style.radius?.toString() ?? '',
-    ].join('|');
+  private _applyStyleToContext(context: CanvasRenderingContext2D, style: FeatureStyle): void {
+    if (style.fillStyle) {
+      context.fillStyle = style.fillStyle;
+    }
+    if (style.strokeStyle) {
+      context.strokeStyle = style.strokeStyle;
+    }
+    if (style.lineWidth !== undefined) {
+      context.lineWidth = style.lineWidth;
+    }
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
   }
 
   /**
-   * Apply style to context
+   * Release all contexts back to pool
    */
-  private _applyStyleToContext(context2d: CanvasRenderingContext2D, style: FeatureStyle): void {
-    if (style.fillStyle) {
-      context2d.fillStyle = style.fillStyle;
-      if (style.fillOpacity !== undefined && !ColorUtils.hasAlpha(style.fillStyle)) {
-        context2d.fillStyle = ColorUtils.convertColorWithOpacity(style.fillStyle, style.fillOpacity);
-      }
+  private _releaseAllContexts(): void {
+    // Skip pool overhead for simple cases - just clear the map
+    if (this._contextsInUse.size <= 3) {
+      this._contextsInUse.clear();
+      return;
     }
-
-    if (style.strokeStyle) {
-      context2d.strokeStyle = style.strokeStyle;
-    }
-
-    if (style.lineWidth !== undefined) {
-      context2d.lineWidth = style.lineWidth;
-    }
+    
+    // Only use pool for complex multi-tile features
+    this._contextsInUse.forEach((context) => {
+      this._contextPool.release(context);
+    });
+    this._contextsInUse.clear();
   }
+
 
   /**
    * Draw point geometry
@@ -294,37 +299,92 @@ export class MVTFeature {
     }
   }
 
+  private _createGeometryHash(coordinates: any[]): string {
+    if (!coordinates || coordinates.length === 0) return 'empty';
+    
+    let hash = `rings:${coordinates.length}`;
+    for (let i = 0; i < Math.min(coordinates.length, 3); i++) {
+      if (coordinates[i] && coordinates[i].length > 0) {
+        hash += `_r${i}:${coordinates[i].length}`;
+        if (coordinates[i][0]) {
+          hash += `_f${coordinates[i][0].x},${coordinates[i][0].y}`;
+        }
+        if (coordinates[i].length > 1) {
+          const lastIdx = coordinates[i].length - 1;
+          hash += `_l${coordinates[i][lastIdx].x},${coordinates[i][lastIdx].y}`;
+        }
+      }
+    }
+    return hash;
+  }
+
+  private _invalidatePath2DCache(): void {
+    this._path2dVersion++;
+    this._geometryHash = null;
+    
+    Object.values(this.tiles).forEach(tile => {
+      tile.paths2d = null;
+    });
+  }
+
   /**
-   * Get cached Path2D objects
+   * Get cached Path2D objects with enhanced invalidation
    */
   private _getOptimizedPaths2D(tileContext: TileContext, tile: TileFeatureData): Path2D | null {
-    if (tile.paths2d) {
-      return tile.paths2d;
-    }
-
     const coordinates = tile.vectorTileFeature.loadGeometry();
-    const paths2d = new Path2D();
-
+    
     if (!coordinates || coordinates.length === 0) {
       return null;
     }
 
+    // For simple geometries, skip all caching overhead
+    const totalPoints = coordinates.reduce((sum, coord) => sum + (coord ? coord.length : 0), 0);
+    if (totalPoints < 50) {
+      return this._createSimplePath2D(coordinates, tileContext, tile.divisor);
+    }
+
+    const currentGeometryHash = this._createGeometryHash(coordinates);
+    const needsRecreation = !tile.paths2d || 
+                           this._geometryHash !== currentGeometryHash ||
+                           !this._geometryHash;
+
+    if (needsRecreation) {
+      tile.paths2d = this._createSimplePath2D(coordinates, tileContext, tile.divisor);
+      this._geometryHash = currentGeometryHash;
+    }
+
+    return tile.paths2d;
+  }
+
+  private _createSimplePath2D(coordinates: any[], tileContext: TileContext, divisor: number): Path2D {
+    const paths2d = new Path2D();
+    
     for (let i = 0; i < coordinates.length; i++) {
       const coordinate = coordinates[i];
+      
+      if (!coordinate || coordinate.length === 0) continue;
+      
       const path2 = new Path2D();
+      let hasValidPoints = false;
 
       for (let j = 0; j < coordinate.length; j++) {
-        const point = this._getPoint(coordinate[j], tileContext, tile.divisor);
+        const point = this._getPoint(coordinate[j], tileContext, divisor);
+        
+        if (isNaN(point.x) || isNaN(point.y)) continue;
+        
         if (j === 0) {
           path2.moveTo(point.x, point.y);
+          hasValidPoints = true;
         } else {
           path2.lineTo(point.x, point.y);
         }
       }
-      paths2d.addPath(path2);
+      
+      if (hasValidPoints) {
+        paths2d.addPath(path2);
+      }
     }
 
-    tile.paths2d = paths2d;
     return paths2d;
   }
 
@@ -427,8 +487,9 @@ export class MVTFeature {
    * Cleanup method to clear caches
    */
   dispose(): void {
-    this._cachedContexts.clear();
+    this._releaseAllContexts();
     this._cachedPaths.clear();
+    this._invalidatePath2DCache();
 
     if (this.mVTSource.unregisterFeature) {
       this.mVTSource.unregisterFeature(this.featureId);

@@ -2,13 +2,26 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'jsdom',
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts', 'jest-canvas-mock/lib/index.js'],
+  
+  // Enhanced ES module handling
+  transform: {
+    '^.+\\.ts$': ['ts-jest', {
+      isolatedModules: true
+    }]
+  },
+  
   // Transform ES modules from node_modules
-  transformIgnorePatterns: ['node_modules/(?!(@mapbox|@turf)/)'],
+  transformIgnorePatterns: [
+    'node_modules/(?!(@mapbox|@turf|pbf)/)'
+  ],
+  
   // Module name mapping for ES modules
   moduleNameMapper: {
     '^@mapbox/vector-tile$': '<rootDir>/node_modules/@mapbox/vector-tile/index.js',
     '^@mapbox/point-geometry$': '<rootDir>/node_modules/@mapbox/point-geometry/index.js',
+    '^pbf$': '<rootDir>/node_modules/pbf/index.js'
   },
+  
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/types.ts'],
   coverageThreshold: {
     global: {
