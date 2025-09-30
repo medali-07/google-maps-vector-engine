@@ -88,6 +88,24 @@ mvtSource.clearAllHoveredFeatures();
 mvtSource.dispose();
 ```
 
+## 🔬 Performance Testing
+
+Run comprehensive performance tests to benchmark your implementation:
+
+```bash
+# Quick performance test
+npm run test:performance
+
+# Generate detailed performance report
+npm run test:performance:report
+
+# Full benchmark suite with memory profiling
+npm run test:performance:full
+```
+
+Performance targets: `<100ms` initialization, `<5ms` feature selection, `<1ms` lookups.  
+See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for detailed testing documentation.
+
 ## 📚 Documentation
 
 | Guide                                               | Description                       |
