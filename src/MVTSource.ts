@@ -99,6 +99,10 @@ export class MVTSource implements google.maps.MapType {
   private _redrawDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly REDRAW_DEBOUNCE_MS = 16;
 
+  private _styleCache: Map<string, FeatureStyle> = new Map();
+  private _styleCacheVersion: number = 0;
+  private static readonly MAX_STYLE_CACHE_SIZE = 1000;
+
   // Cache size limits to prevent memory leaks
   private static readonly MAX_TILES_CACHE_SIZE = 100;
   private static readonly MAX_VISIBLE_TILES_SIZE = 50;
@@ -986,33 +990,11 @@ export class MVTSource implements google.maps.MapType {
    * Deselect all features
    */
   deselectAllFeatures(): void {
-    const selectedIds = Array.from(this._selectedFeatureIds);
-
-    this._selectedFeatureIds.clear();
-
-    // Cancel all pending replacement requests
-    this._pendingReplacementRequests.forEach((controller) => {
-      controller.abort();
-    });
-    this._pendingReplacementRequests.clear();
-
-    selectedIds.forEach((featureId) => {
-      const feature = this._featureIndex.get(featureId);
-      if (feature) {
-        feature.setSelected(false);
-
-        if (this._featureSelectionCallback) {
-          const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
-          if (vectorFeature) {
-            this._callFeatureSelectionCallback(featureId, vectorFeature, false);
-          }
-        }
-      }
-      this._removeGeoJSONOverlay(featureId);
-      delete this._replacedFeatures[featureId];
-    });
-
-    if (selectedIds.length > 0) {
+    const hadSelections = this._selectedFeatureIds.size > 0;
+    
+    this._batchDeselectAllFeatures();
+    
+    if (hadSelections) {
       this._scheduleRedraw('all');
     }
   }
@@ -1182,11 +1164,157 @@ export class MVTSource implements google.maps.MapType {
       this._multipleSelection = true;
     }
 
-    this.deselectAllFeatures();
+    this._batchDeselectAllFeatures();
+    this._batchSelectFeatures(featuresIds);
+    this._scheduleRedraw('all');
+  }
 
-    featuresIds.forEach((featureId) => {
-      this._selectFeature(featureId);
+  /**
+   * Add features to current selection
+   */
+  addToSelection(featureIds: (string | number)[]): void {
+    if (featureIds.length === 0) return;
+    
+    this._multipleSelection = true;
+    const newSelections: (string | number)[] = [];
+    
+    for (const featureId of featureIds) {
+      if (!this._selectedFeatureIds.has(featureId)) {
+        newSelections.push(featureId);
+      }
+    }
+    
+    if (newSelections.length > 0) {
+      this._batchSelectFeatures(newSelections);
+      this._scheduleRedraw('all');
+    }
+  }
+
+  /**
+   * Remove features from current selection
+   */
+  removeFromSelection(featureIds: (string | number)[]): void {
+    if (featureIds.length === 0) return;
+    
+    const toRemove: (string | number)[] = [];
+    
+    for (const featureId of featureIds) {
+      if (this._selectedFeatureIds.has(featureId)) {
+        toRemove.push(featureId);
+      }
+    }
+    
+    if (toRemove.length > 0) {
+      this._batchDeselectFeatures(toRemove);
+      this._scheduleRedraw('all');
+    }
+  }
+
+  private _batchDeselectFeatures(featureIds: (string | number)[]): void {
+    const callbackPromises: Promise<void>[] = [];
+
+    for (const featureId of featureIds) {
+      this._selectedFeatureIds.delete(featureId);
+
+      const pendingRequest = this._pendingReplacementRequests.get(featureId);
+      if (pendingRequest) {
+        pendingRequest.abort();
+        this._pendingReplacementRequests.delete(featureId);
+      }
+
+      const feature = this._featureIndex.get(featureId);
+      if (feature) {
+        feature.setSelected(false);
+
+        if (this._featureSelectionCallback) {
+          const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
+          if (vectorFeature) {
+            callbackPromises.push(
+              this._callFeatureSelectionCallback(featureId, vectorFeature, false)
+            );
+          }
+        }
+      }
+
+      this._removeGeoJSONOverlay(featureId);
+      delete this._replacedFeatures[featureId];
+    }
+
+    if (callbackPromises.length > 0) {
+      Promise.all(callbackPromises).catch(error => {
+        this.logger.warn('Error in batch deselection callbacks:', error);
+      });
+    }
+  }
+
+  private _batchSelectFeatures(featureIds: (string | number)[]): void {
+    const callbackPromises: Promise<void>[] = [];
+
+    for (const featureId of featureIds) {
+      if (!this._multipleSelection && this._selectedFeatureIds.size > 0) {
+        break;
+      }
+
+      this._selectedFeatureIds.add(featureId);
+      const feature = this._featureIndex.get(featureId);
+
+      if (feature) {
+        feature.setSelected(true);
+
+        if (this._featureSelectionCallback) {
+          const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
+          if (vectorFeature) {
+            callbackPromises.push(
+              this._callFeatureSelectionCallback(featureId, vectorFeature, true)
+            );
+          }
+        }
+      }
+    }
+
+    if (callbackPromises.length > 0) {
+      Promise.all(callbackPromises).catch(error => {
+        this.logger.warn('Error in batch selection callbacks:', error);
+      });
+    }
+  }
+
+  private _batchDeselectAllFeatures(): void {
+    const selectedIds = Array.from(this._selectedFeatureIds);
+    
+    this._selectedFeatureIds.clear();
+
+    this._pendingReplacementRequests.forEach((controller) => {
+      controller.abort();
     });
+    this._pendingReplacementRequests.clear();
+
+    const callbackPromises: Promise<void>[] = [];
+
+    selectedIds.forEach((featureId) => {
+      const feature = this._featureIndex.get(featureId);
+      if (feature) {
+        feature.setSelected(false);
+
+        if (this._featureSelectionCallback) {
+          const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
+          if (vectorFeature) {
+            callbackPromises.push(
+              this._callFeatureSelectionCallback(featureId, vectorFeature, false)
+            );
+          }
+        }
+      }
+      
+      this._removeGeoJSONOverlay(featureId);
+      delete this._replacedFeatures[featureId];
+    });
+
+    if (callbackPromises.length > 0) {
+      Promise.all(callbackPromises).catch(error => {
+        this.logger.warn('Error in batch deselection callbacks:', error);
+      });
+    }
   }
 
   /**
@@ -1210,6 +1338,7 @@ export class MVTSource implements google.maps.MapType {
     const currentSelectedIds = Array.from(this._selectedFeatureIds);
 
     this.style = style;
+    this._invalidateStyleCache();
 
     Object.values(this.mVTLayers).forEach((layer) => {
       layer.setStyle(style);
@@ -1228,6 +1357,47 @@ export class MVTSource implements google.maps.MapType {
     }
   }
 
+  private _getStyleCacheKey(feature: VectorTileFeature, featureId: string | number): string {
+    const isSelected = this._selectedFeatureIds.has(featureId);
+    const isHovered = this._hoveredFeatureIds.has(featureId);
+    const state = (isSelected ? 'S' : '') + (isHovered ? 'H' : '');
+    const featureHash = this._createFeatureHash(feature);
+    return `${this._styleCacheVersion}:${featureId}:${featureHash}:${state}`;
+  }
+
+  private _createFeatureHash(feature: VectorTileFeature): string {
+    const props = feature.properties || {};
+    const keyProps = [
+      'type', 'category', 'class', 'subtype', 'importance', 'level',
+      'land_use', 'population_density', 'area', 'length'
+    ];
+    
+    let hash = `t${feature.type}`;
+    for (const prop of keyProps) {
+      if (props[prop] !== undefined) {
+        hash += `_${prop}:${props[prop]}`;
+      }
+    }
+    return hash;
+  }
+
+  private _invalidateStyleCache(): void {
+    this._styleCacheVersion++;
+    this._styleCache.clear();
+  }
+
+  private _cleanupStyleCache(): void {
+    if (this._styleCache.size >= MVTSource.MAX_STYLE_CACHE_SIZE) {
+      const entries = Array.from(this._styleCache.entries());
+      const keepCount = Math.floor(MVTSource.MAX_STYLE_CACHE_SIZE * 0.7);
+      
+      this._styleCache.clear();
+      entries.slice(-keepCount).forEach(([key, value]) => {
+        this._styleCache.set(key, value);
+      });
+    }
+  }
+
   /**
    * Get current style for feature with selection/hover state
    */
@@ -1235,9 +1405,24 @@ export class MVTSource implements google.maps.MapType {
     const isSelected = this._selectedFeatureIds.has(featureId);
     const isHovered = this._hoveredFeatureIds.has(featureId);
     const baseStyle = typeof this.style === 'function' ? this.style(feature) : this.style;
+    
+    // Fast path: static style with no state changes
+    if (typeof this.style !== 'function' && !isSelected && !isHovered) {
+      return baseStyle;
+    }
+
+    // Fast path: only use cache if we have significant load (>100 features or function styles)
+    const shouldUseCache = typeof this.style === 'function' || this._featureIndex.size > 100;
+    
+    if (shouldUseCache) {
+      const cacheKey = this._getStyleCacheKey(feature, featureId);
+      const cachedStyle = this._styleCache.get(cacheKey);
+      if (cachedStyle) {
+        return cachedStyle;
+      }
+    }
 
     let resultStyle = { ...baseStyle };
-
     delete resultStyle.selected;
     delete resultStyle.hover;
 
@@ -1262,6 +1447,11 @@ export class MVTSource implements google.maps.MapType {
           resultStyle.fillStyle = hoverFill;
         }
       }
+    }
+
+    if (shouldUseCache) {
+      this._cleanupStyleCache();
+      this._styleCache.set(this._getStyleCacheKey(feature, featureId), resultStyle);
     }
 
     return resultStyle;
@@ -2092,6 +2282,7 @@ export class MVTSource implements google.maps.MapType {
     this._visibleTiles = {};
     this._replacedFeatures = {};
 
+    this._styleCache.clear();
     this._pendingRedraws.clear();
     if (this._redrawDebounceTimer) {
       clearTimeout(this._redrawDebounceTimer);
