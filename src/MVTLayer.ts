@@ -325,6 +325,32 @@ export class MVTLayer {
   }
 
   /**
+   * Release everything this layer holds for a tile.
+   *
+   * Drops the tile from every feature that spans it, and disposes features
+   * that no longer appear in any tile. Returns true when the layer retains no
+   * tiles at all, so the source can drop the layer itself.
+   */
+  releaseTile(tileId: string): boolean {
+    const canvasAndFeatures = this._canvasAndMVTFeatures[tileId];
+    delete this._canvasAndMVTFeatures[tileId];
+
+    if (canvasAndFeatures) {
+      for (const feature of canvasAndFeatures.features as MVTFeature[]) {
+        if (feature.removeTile(tileId) === 0) {
+          // dispose() calls back into MVTSource.unregisterFeature, which
+          // removes it from the source's feature index.
+          feature.dispose();
+          delete this._mVTFeatures[feature.featureId];
+        }
+      }
+      canvasAndFeatures.features = [];
+    }
+
+    return Object.keys(this._canvasAndMVTFeatures).length === 0;
+  }
+
+  /**
    * Get canvas for a specific tile
    */
   getCanvas(id: string): HTMLCanvasElement | null {
