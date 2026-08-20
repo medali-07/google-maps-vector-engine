@@ -41,9 +41,6 @@ benchmark-report.md
 memory-report.md
 full-performance-report.md
 
-# Agent / editor scratch
-.claude/
-
 # Environment variables
 .env
 .env.local
