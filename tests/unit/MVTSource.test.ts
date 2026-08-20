@@ -193,7 +193,7 @@ describe('MVTSource Race Condition Fix', () => {
     expect(mockFeatureSelectionCallback).toHaveBeenCalled();
   });
 
-  test('should clean up all pending requests on dispose', async () => {
+  test('should clean up all pending requests on dispose', () => {
     const neverResolvingPromise = new Promise(() => {}); // Never resolves
     mockGetReplacementFeature.mockReturnValue(neverResolvingPromise);
 

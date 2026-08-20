@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2018",
+    "target": "ES2020",
     "module": "CommonJS",
-    "lib": ["ES2018", "DOM"],
+    "lib": ["ES2020", "DOM"],
     "outDir": "./dist",
     "rootDir": ".",
     "strict": true,
@@ -20,11 +20,18 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmitOnError": true,
-    "noImplicitAny": true,
+
+    // `noImplicitAny` / `noImplicitThis` are implied by `strict`.
     "noImplicitReturns": true,
-    "noImplicitThis": true,
-    "noUnusedLocals": false,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
     "noUnusedParameters": false
+
+    // Deferred, with measured cost against the current tree:
+    //   "noUncheckedIndexedAccess"   39 errors - enable during the Phase 2 split
+    //   "exactOptionalPropertyTypes"  4 errors - enable with the Phase 4 type work
+    //   "verbatimModuleSyntax"                 - blocked while `module` is CommonJS
   },
   "include": ["index.ts", "src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts"]

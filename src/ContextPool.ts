@@ -46,11 +46,11 @@ export class ContextPool {
         canvas,
         lastStyleHash: styleHash,
         available: false,
-        createdAt: Date.now()
+        createdAt: Date.now(),
       };
 
       this._applyStyleToContext(context, style);
-      
+
       if (this._pool.length < this._maxPoolSize) {
         this._pool.push(contextState);
       }
@@ -63,7 +63,7 @@ export class ContextPool {
 
     contextState.available = false;
     this._inUse.add(contextState.context);
-    
+
     return contextState.context;
   }
 
@@ -72,30 +72,23 @@ export class ContextPool {
    */
   release(context: CanvasRenderingContext2D): void {
     this._inUse.delete(context);
-    
-    const contextState = this._pool.find(cs => cs.context === context);
+
+    const contextState = this._pool.find((cs) => cs.context === context);
     if (contextState) {
       contextState.available = true;
     }
   }
 
   private _findAvailableContext(canvas: HTMLCanvasElement, styleHash: string): ContextState | null {
-    let match = this._pool.find(cs => 
-      cs.available && 
-      cs.canvas === canvas && 
-      cs.lastStyleHash === styleHash
-    );
+    let match = this._pool.find((cs) => cs.available && cs.canvas === canvas && cs.lastStyleHash === styleHash);
 
     if (match) return match;
 
-    match = this._pool.find(cs => 
-      cs.available && 
-      cs.canvas === canvas
-    );
+    match = this._pool.find((cs) => cs.available && cs.canvas === canvas);
 
     if (match) return match;
 
-    return this._pool.find(cs => cs.available) || null;
+    return this._pool.find((cs) => cs.available) || null;
   }
 
   /**
@@ -138,18 +131,18 @@ export class ContextPool {
     const now = Date.now();
     const maxAge = 5 * 60 * 1000;
 
-    this._pool = this._pool.filter(cs => {
-      if (cs.available && (now - cs.createdAt) > maxAge) {
+    this._pool = this._pool.filter((cs) => {
+      if (cs.available && now - cs.createdAt > maxAge) {
         return false;
       }
       return true;
     });
 
     if (this._pool.length > this._maxPoolSize) {
-      const availableContexts = this._pool.filter(cs => cs.available);
+      const availableContexts = this._pool.filter((cs) => cs.available);
       const toRemove = availableContexts.slice(0, availableContexts.length - Math.floor(this._maxPoolSize * 0.7));
-      
-      toRemove.forEach(cs => {
+
+      toRemove.forEach((cs) => {
         const index = this._pool.indexOf(cs);
         if (index > -1) {
           this._pool.splice(index, 1);
@@ -162,7 +155,7 @@ export class ContextPool {
    * Get pool statistics for debugging
    */
   getStats(): { total: number; available: number; inUse: number } {
-    const available = this._pool.filter(cs => cs.available).length;
+    const available = this._pool.filter((cs) => cs.available).length;
     return {
       total: this._pool.length,
       available,

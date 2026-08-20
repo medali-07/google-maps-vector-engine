@@ -2,11 +2,11 @@
 
 /**
  * Performance test runner script
- * 
+ *
  * Usage:
  *   node scripts/run-performance-tests.js
  *   npm run test:performance
- * 
+ *
  * Options:
  *   --output=file.txt    Save results to file
  *   --benchmark          Run comprehensive benchmark suite
@@ -16,7 +16,6 @@
 
 const { execSync } = require('child_process');
 const fs = require('fs');
-const path = require('path');
 const os = require('os');
 
 class PerformanceTestRunner {
@@ -27,7 +26,7 @@ class PerformanceTestRunner {
       timestamp: new Date().toISOString(),
       system: this.getSystemInfo(),
       tests: [],
-      summary: {}
+      summary: {},
     };
   }
 
@@ -36,10 +35,10 @@ class PerformanceTestRunner {
       output: null,
       benchmark: false,
       memory: false,
-      verbose: false
+      verbose: false,
     };
 
-    this.args.forEach(arg => {
+    this.args.forEach((arg) => {
       if (arg.startsWith('--output=')) {
         options.output = arg.split('=')[1];
       } else if (arg === '--benchmark') {
@@ -61,7 +60,7 @@ class PerformanceTestRunner {
       nodeVersion: process.version,
       cpus: os.cpus().length,
       totalMemory: `${(os.totalmem() / 1024 / 1024 / 1024).toFixed(2)}GB`,
-      freeMemory: `${(os.freemem() / 1024 / 1024 / 1024).toFixed(2)}GB`
+      freeMemory: `${(os.freemem() / 1024 / 1024 / 1024).toFixed(2)}GB`,
     };
   }
 
@@ -93,7 +92,6 @@ class PerformanceTestRunner {
 
       // Generate final report
       this.generateReport();
-
     } catch (error) {
       console.error('❌ Performance tests failed:', error.message);
       process.exit(1);
@@ -112,32 +110,31 @@ class PerformanceTestRunner {
 
   async runJestTests() {
     console.log('🧪 Running Jest performance tests...');
-    
+
     const jestCmd = [
       'npx jest',
       '--config=jest.performance.config.js',
       '--verbose',
       '--detectOpenHandles',
-      '--forceExit'
+      '--forceExit',
     ].join(' ');
 
     try {
-      const output = execSync(jestCmd, { 
+      const output = execSync(jestCmd, {
         stdio: this.options.verbose ? 'inherit' : 'pipe',
         encoding: 'utf8',
         env: {
           ...process.env,
-          PERFORMANCE_OUTPUT_FILE: this.options.output
-        }
+          PERFORMANCE_OUTPUT_FILE: this.options.output,
+        },
       });
-      
+
       console.log('✅ Jest tests completed\n');
-      
+
       // Parse Jest output for performance metrics
       if (output) {
         this.parseJestOutput(output);
       }
-      
     } catch (error) {
       // Jest might exit with code 1 but still provide useful output
       if (error.stdout) {
@@ -152,28 +149,28 @@ class PerformanceTestRunner {
   parseJestOutput(output) {
     // Extract performance metrics from Jest output
     const lines = output.split('\n');
-    const performanceLines = lines.filter(line => 
-      line.includes('ms') && (
-        line.includes('Initialization') ||
-        line.includes('Selection') ||
-        line.includes('Draw') ||
-        line.includes('Lookup') ||
-        line.includes('Disposal') ||
-        line.includes('Creation') ||
-        line.includes('Style') ||
-        line.includes('Cache') ||
-        line.includes('Multi-tile') ||
-        line.includes('Batch')
-      )
+    const performanceLines = lines.filter(
+      (line) =>
+        line.includes('ms') &&
+        (line.includes('Initialization') ||
+          line.includes('Selection') ||
+          line.includes('Draw') ||
+          line.includes('Lookup') ||
+          line.includes('Disposal') ||
+          line.includes('Creation') ||
+          line.includes('Style') ||
+          line.includes('Cache') ||
+          line.includes('Multi-tile') ||
+          line.includes('Batch')),
     );
 
-    performanceLines.forEach(line => {
+    performanceLines.forEach((line) => {
       const match = line.match(/(.+?):\s*(\d+\.?\d*)\s*ms/);
       if (match) {
         this.results.tests.push({
           name: match[1].trim(),
           duration: parseFloat(match[2]),
-          type: 'jest'
+          type: 'jest',
         });
       }
     });
@@ -181,13 +178,13 @@ class PerformanceTestRunner {
 
   async runBenchmarkTests() {
     console.log('📊 Running benchmark tests...');
-    
+
     // Custom benchmark tests using the built engine
     const benchmarks = [
       this.benchmarkInitialization,
       this.benchmarkFeatureSelection,
       this.benchmarkDrawing,
-      this.benchmarkMemoryUsage
+      this.benchmarkMemoryUsage,
     ];
 
     for (const benchmark of benchmarks) {
@@ -208,21 +205,21 @@ class PerformanceTestRunner {
 
     for (let i = 0; i < iterations; i++) {
       const start = process.hrtime.bigint();
-      
+
       // Simulate initialization (would need actual implementation)
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 10));
-      
+      await new Promise((resolve) => setTimeout(resolve, Math.random() * 10));
+
       const end = process.hrtime.bigint();
       times.push(Number(end - start) / 1000000); // Convert to milliseconds
     }
 
     const avgTime = times.reduce((a, b) => a + b, 0) / times.length;
-    
+
     return {
       name: 'Benchmark: Initialization',
       duration: avgTime,
       iterations,
-      type: 'benchmark'
+      type: 'benchmark',
     };
   }
 
@@ -233,13 +230,13 @@ class PerformanceTestRunner {
 
     for (const count of featureCounts) {
       const times = [];
-      
+
       for (let i = 0; i < iterations; i++) {
         const start = process.hrtime.bigint();
-        
+
         // Simulate feature selection
-        await new Promise(resolve => setTimeout(resolve, count * 0.01));
-        
+        await new Promise((resolve) => setTimeout(resolve, count * 0.01));
+
         const end = process.hrtime.bigint();
         times.push(Number(end - start) / 1000000);
       }
@@ -249,7 +246,7 @@ class PerformanceTestRunner {
         name: `Benchmark: Selection ${count} features`,
         duration: avgTime,
         iterations,
-        type: 'benchmark'
+        type: 'benchmark',
       });
     }
 
@@ -260,17 +257,17 @@ class PerformanceTestRunner {
     return {
       name: 'Benchmark: Drawing Operations',
       duration: Math.random() * 20 + 5, // Simulated
-      type: 'benchmark'
+      type: 'benchmark',
     };
   }
 
   async benchmarkMemoryUsage() {
     const memBefore = process.memoryUsage();
-    
+
     // Simulate memory-intensive operations
     const data = Array.from({ length: 10000 }, () => ({
       id: Math.random().toString(),
-      coordinates: Array.from({ length: 100 }, () => ({ x: Math.random(), y: Math.random() }))
+      coordinates: Array.from({ length: 100 }, () => ({ x: Math.random(), y: Math.random() })),
     }));
 
     const memAfter = process.memoryUsage();
@@ -283,33 +280,33 @@ class PerformanceTestRunner {
       name: 'Benchmark: Memory Usage',
       duration: 0,
       memoryDelta: memoryDelta / 1024 / 1024, // MB
-      type: 'memory'
+      type: 'memory',
     };
   }
 
   async runMemoryTests() {
     console.log('🧠 Running memory profiling...');
-    
+
     const memBefore = process.memoryUsage();
-    
+
     // Run a subset of tests with memory monitoring
     try {
       execSync('npx jest tests/performance/MVTFeature.performance.test.ts --detectOpenHandles --forceExit', {
-        stdio: this.options.verbose ? 'inherit' : 'pipe'
+        stdio: this.options.verbose ? 'inherit' : 'pipe',
       });
-    } catch (error) {
+    } catch {
       // Continue even if tests have issues
     }
 
     const memAfter = process.memoryUsage();
-    
+
     this.results.memory = {
       before: memBefore,
       after: memAfter,
       delta: {
         heapUsed: memAfter.heapUsed - memBefore.heapUsed,
-        external: memAfter.external - memBefore.external
-      }
+        external: memAfter.external - memBefore.external,
+      },
     };
 
     console.log('✅ Memory profiling completed\n');
@@ -317,25 +314,29 @@ class PerformanceTestRunner {
 
   generateReport() {
     console.log('📋 Generating performance report...\n');
-    
+
     // Calculate summary statistics
-    const testResults = this.results.tests.filter(t => typeof t.duration === 'number');
+    const testResults = this.results.tests.filter((t) => typeof t.duration === 'number');
     this.results.summary = {
       totalTests: testResults.length,
-      averageDuration: testResults.length > 0 ? 
-        testResults.reduce((sum, t) => sum + t.duration, 0) / testResults.length : 0,
-      slowestTest: testResults.length > 0 ? 
-        testResults.reduce((max, t) => t.duration > max.duration ? t : max, testResults[0]) : null,
-      fastestTest: testResults.length > 0 ? 
-        testResults.reduce((min, t) => t.duration < min.duration ? t : min, testResults[0]) : null
+      averageDuration:
+        testResults.length > 0 ? testResults.reduce((sum, t) => sum + t.duration, 0) / testResults.length : 0,
+      slowestTest:
+        testResults.length > 0
+          ? testResults.reduce((max, t) => (t.duration > max.duration ? t : max), testResults[0])
+          : null,
+      fastestTest:
+        testResults.length > 0
+          ? testResults.reduce((min, t) => (t.duration < min.duration ? t : min), testResults[0])
+          : null,
     };
 
     // Generate report content
     const report = this.formatReport();
-    
+
     // Output to console
     console.log(report);
-    
+
     // Save to file if requested
     if (this.options.output) {
       fs.writeFileSync(this.options.output, report);
@@ -345,7 +346,7 @@ class PerformanceTestRunner {
 
   formatReport() {
     const isMarkdown = this.options.output && this.options.output.endsWith('.md');
-    
+
     if (isMarkdown) {
       return this.formatMarkdownReport();
     } else {
@@ -377,11 +378,15 @@ class PerformanceTestRunner {
     ];
 
     if (this.results.summary.slowestTest) {
-      lines.push(`| Slowest Test | ${this.results.summary.slowestTest.name} (${this.results.summary.slowestTest.duration.toFixed(2)}ms) |`);
+      lines.push(
+        `| Slowest Test | ${this.results.summary.slowestTest.name} (${this.results.summary.slowestTest.duration.toFixed(2)}ms) |`,
+      );
     }
-    
+
     if (this.results.summary.fastestTest) {
-      lines.push(`| Fastest Test | ${this.results.summary.fastestTest.name} (${this.results.summary.fastestTest.duration.toFixed(2)}ms) |`);
+      lines.push(
+        `| Fastest Test | ${this.results.summary.fastestTest.name} (${this.results.summary.fastestTest.duration.toFixed(2)}ms) |`,
+      );
     }
 
     lines.push('');
@@ -391,7 +396,7 @@ class PerformanceTestRunner {
     lines.push('');
     lines.push('| Operation | Target | Actual | Status |');
     lines.push('|-----------|--------|---------|---------|');
-    
+
     // Define benchmarks with their targets
     const benchmarks = [
       { name: 'Initialization', target: 100, pattern: /initialization/i },
@@ -403,11 +408,11 @@ class PerformanceTestRunner {
       { name: 'Point Drawing', target: 10, pattern: /point.*draw/i },
       { name: 'LineString Drawing', target: 15, pattern: /(line|linestring).*draw/i },
       { name: 'Multi-tile Drawing', target: 25, pattern: /(multi.*tile|unified.*multi)/i },
-      { name: 'Memory Cleanup', target: 20, pattern: /(disposal|dispose|cleanup)/i }
+      { name: 'Memory Cleanup', target: 20, pattern: /(disposal|dispose|cleanup)/i },
     ];
 
-    benchmarks.forEach(benchmark => {
-      const test = this.results.tests.find(t => benchmark.pattern.test(t.name));
+    benchmarks.forEach((benchmark) => {
+      const test = this.results.tests.find((t) => benchmark.pattern.test(t.name));
       if (test) {
         const status = test.duration <= benchmark.target ? '✅ Pass' : '⚠️ Slow';
         lines.push(`| ${benchmark.name} | < ${benchmark.target}ms | ${test.duration.toFixed(2)}ms | ${status} |`);
@@ -424,31 +429,31 @@ class PerformanceTestRunner {
       lines.push('');
       lines.push('| Test Name | Duration | Type |');
       lines.push('|-----------|----------|------|');
-      
+
       // Group tests by category
       const categories = {
-        'Initialization': this.results.tests.filter(t => /initialization/i.test(t.name)),
-        'Selection': this.results.tests.filter(t => /selection/i.test(t.name)),
-        'Drawing': this.results.tests.filter(t => /draw/i.test(t.name)),
-        'Lookup': this.results.tests.filter(t => /lookup/i.test(t.name)),
-        'Caching': this.results.tests.filter(t => /cache/i.test(t.name)),
-        'Memory': this.results.tests.filter(t => /disposal|memory/i.test(t.name)),
-        'Other': this.results.tests.filter(t => 
-          !/initialization|selection|draw|lookup|cache|disposal|memory/i.test(t.name)
-        )
+        Initialization: this.results.tests.filter((t) => /initialization/i.test(t.name)),
+        Selection: this.results.tests.filter((t) => /selection/i.test(t.name)),
+        Drawing: this.results.tests.filter((t) => /draw/i.test(t.name)),
+        Lookup: this.results.tests.filter((t) => /lookup/i.test(t.name)),
+        Caching: this.results.tests.filter((t) => /cache/i.test(t.name)),
+        Memory: this.results.tests.filter((t) => /disposal|memory/i.test(t.name)),
+        Other: this.results.tests.filter(
+          (t) => !/initialization|selection|draw|lookup|cache|disposal|memory/i.test(t.name),
+        ),
       };
 
       Object.entries(categories).forEach(([category, tests]) => {
         if (tests.length > 0) {
           lines.push(`| **${category}** | | |`);
-          tests.forEach(test => {
+          tests.forEach((test) => {
             const duration = test.duration ? `${test.duration.toFixed(2)}ms` : 'N/A';
             const typeIcon = test.type === 'benchmark' ? '📊' : test.type === 'memory' ? '🧠' : '🧪';
             lines.push(`| ${test.name} | ${duration} | ${typeIcon} ${test.type} |`);
           });
         }
       });
-      
+
       lines.push('');
     }
 
@@ -492,7 +497,9 @@ class PerformanceTestRunner {
     lines.push('');
     lines.push('**🎯 Compare these results after making changes to measure performance impact!**');
     lines.push('');
-    lines.push(`*Report generated by Google Maps Vector Engine Performance Suite v${require('../package.json').version}*`);
+    lines.push(
+      `*Report generated by Google Maps Vector Engine Performance Suite v${require('../package.json').version}*`,
+    );
 
     return lines.join('\n');
   }
@@ -516,11 +523,15 @@ class PerformanceTestRunner {
     ];
 
     if (this.results.summary.slowestTest) {
-      lines.push(`   Slowest Test: ${this.results.summary.slowestTest.name} (${this.results.summary.slowestTest.duration.toFixed(2)}ms)`);
+      lines.push(
+        `   Slowest Test: ${this.results.summary.slowestTest.name} (${this.results.summary.slowestTest.duration.toFixed(2)}ms)`,
+      );
     }
-    
+
     if (this.results.summary.fastestTest) {
-      lines.push(`   Fastest Test: ${this.results.summary.fastestTest.name} (${this.results.summary.fastestTest.duration.toFixed(2)}ms)`);
+      lines.push(
+        `   Fastest Test: ${this.results.summary.fastestTest.name} (${this.results.summary.fastestTest.duration.toFixed(2)}ms)`,
+      );
     }
 
     lines.push('');
@@ -530,7 +541,7 @@ class PerformanceTestRunner {
     lines.push('-'.repeat(80));
     lines.push('| Operation                | Target    | Actual     | Status |');
     lines.push('|--------------------------|-----------|------------|--------|');
-    
+
     const benchmarks = [
       { name: 'Initialization', target: 100, pattern: /initialization/i },
       { name: 'Single Selection', target: 5, pattern: /single.*selection/i },
@@ -538,11 +549,11 @@ class PerformanceTestRunner {
       { name: '1000 Features Selection', target: 200, pattern: /1000.*selection/i },
       { name: 'Feature Lookup', target: 1, pattern: /lookup/i },
       { name: 'Drawing Operations', target: 25, pattern: /draw/i },
-      { name: 'Memory Cleanup', target: 20, pattern: /disposal/i }
+      { name: 'Memory Cleanup', target: 20, pattern: /disposal/i },
     ];
 
-    benchmarks.forEach(benchmark => {
-      const test = this.results.tests.find(t => benchmark.pattern.test(t.name));
+    benchmarks.forEach((benchmark) => {
+      const test = this.results.tests.find((t) => benchmark.pattern.test(t.name));
       if (test) {
         const status = test.duration <= benchmark.target ? '✅ PASS' : '⚠️  SLOW';
         const nameCol = benchmark.name.padEnd(24);
@@ -555,14 +566,14 @@ class PerformanceTestRunner {
         lines.push(`| ${nameCol} | ${targetCol} | -          | ⏸️  N/A  |`);
       }
     });
-    
+
     lines.push('-'.repeat(80));
     lines.push('');
 
     // Test results
     if (this.results.tests.length > 0) {
       lines.push('📋 Detailed Test Results:');
-      this.results.tests.forEach(test => {
+      this.results.tests.forEach((test) => {
         const icon = this.getTestIcon(test);
         const duration = test.duration ? `${test.duration.toFixed(2)}ms` : 'N/A';
         lines.push(`   ${icon} ${test.name}: ${duration}`);
@@ -612,7 +623,7 @@ class PerformanceTestRunner {
 // Run the performance tests
 if (require.main === module) {
   const runner = new PerformanceTestRunner();
-  runner.run().catch(error => {
+  runner.run().catch((error) => {
     console.error('❌ Performance test runner failed:', error);
     process.exit(1);
   });

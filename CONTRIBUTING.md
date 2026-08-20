@@ -49,29 +49,36 @@ We welcome contributions to google-maps-vector-engine! This guide will help you 
    npm test
    ```
 
-5. **Start development**:
+5. **Verify your setup**:
+
    ```bash
-   npm run dev
+   npm run check   # type check, lint, format check
+   npm test        # unit test suite
+   npm run build   # CJS + ESM + declarations
    ```
+
+   All three must pass on a clean checkout before you start making changes.
 
 ### Project Structure
 
 ```
 google-maps-vector-engine/
+├── index.ts                # Public API exports (repo root, not src/)
 ├── src/                    # Source code
 │   ├── MVTSource.ts       # Main controller
 │   ├── MVTLayer.ts        # Layer management
 │   ├── MVTFeature.ts      # Feature representation
+│   ├── ContextPool.ts     # Canvas context pooling
 │   ├── Mercator.ts        # Coordinate utilities
 │   ├── ColorUtils.ts      # Color operations
 │   ├── DebugLogger.ts     # Logging utilities
-│   ├── types.ts           # TypeScript definitions
-│   └── index.ts           # Public API exports
+│   └── types.ts           # TypeScript definitions
 ├── tests/                  # Test suite
-│   ├── unit/              # Unit tests
-│   ├── integration/       # Integration tests
-│   └── utils/             # Test utilities
-└── docs/              # Documentation
+│   ├── unit/              # Unit tests (run by `npm test`)
+│   ├── performance/       # Wall-clock benchmarks (`npm run test:performance`)
+│   └── utils/             # Test utilities and mocks
+├── scripts/                # Build and benchmark tooling
+└── docs/                   # Documentation
 ```
 
 ## 📝 Contributing Guidelines
