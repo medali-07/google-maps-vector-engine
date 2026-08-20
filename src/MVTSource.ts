@@ -68,12 +68,37 @@ export class MVTSource implements google.maps.MapType {
   private _selectedFeatureIds: Set<string | number> = new Set();
   private _hoveredFeatureIds: Set<string | number> = new Set();
 
-  // Tile management
-  private _tilesDrawn: Record<string, TileContext> = {};
+  /** Bumped on every selection mutation, so deferred work can detect that the
+   *  selection changed underneath it. */
+  private _selectionVersion = 0;
+
+  // Tile management.
+  //
+  // Caches the *decoded tile* only. It used to hold the whole TileContext,
+  // which pinned a detached 256x256 canvas per entry (~26MB at the 100-entry
+  // limit) and let drawTile hand the same DOM node out twice.
+  private _tilesDrawn: Record<string, VectorTile> = {};
   private _visibleTiles: Record<string, TileContext> = {};
+
+  /** Canvas nodes currently handed to Google Maps, mapped to their tile id.
+   *  The same tile id may be mounted more than once at low zoom, where the
+   *  world repeats horizontally. */
+  private _mountedTiles: Map<Element, string> = new Map();
+
+  /** In-flight tile fetches, so they can be aborted on release and dispose. */
+  private _tileRequests: Map<string, AbortController> = new Map();
+
+  /** Tile ids that have completed a fetch (successfully or not) for the
+   *  current visible set. Drives tileLoaded(). */
+  private _loadedTileIds: Set<string> = new Set();
+
+  private _disposed = false;
 
   // GeoJSON overlay management
   private _geoJSONOverlays: Record<string | number, google.maps.Data.Feature> = {};
+
+  /** Reverse of _geoJSONOverlays, preserving the feature id's original type. */
+  private _overlayToFeatureId: Map<google.maps.Data.Feature, string | number> = new Map();
   private _replacedFeatures: Record<string | number, GeoJSONFeature> = {};
   private _getReplacementFeature: FeatureReplacementFunction | undefined;
   private _featureSelectionCallback: FeatureSelectionCallback | undefined;
@@ -106,7 +131,23 @@ export class MVTSource implements google.maps.MapType {
 
   // Cache size limits to prevent memory leaks
   private static readonly MAX_TILES_CACHE_SIZE = 100;
-  private static readonly MAX_VISIBLE_TILES_SIZE = 50;
+
+  // Tile fetch policy
+  private static readonly TILE_TIMEOUT_MS = 30000;
+  private static readonly TILE_MAX_RETRIES = 2;
+  private static readonly TILE_RETRY_BASE_MS = 500;
+
+  /** Pending retry timers, cancelled on dispose. */
+  private _retryTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+
+  /** Pending tileLoaded() poll timers, cancelled on dispose. */
+  private _tileLoadedTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+
+  /** Deferred timers from _zoomChanged and setStyle, cancelled on dispose. */
+  private _deferredTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+
+  /** Pending hover-delay timer, cancelled on dispose. */
+  private _hoverTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Default color palette for consistency
   private static readonly DEFAULT_COLORS = {
@@ -200,7 +241,12 @@ export class MVTSource implements google.maps.MapType {
    */
   unregisterFeature(featureId: string | number): void {
     this._featureIndex.delete(featureId);
-    this._selectedFeatureIds.delete(featureId);
+
+    // Hover is transient and viewport-bound, so it goes with the feature.
+    // Selection deliberately does NOT: it is source-level state that must
+    // survive a feature scrolling out of view and coming back. This matters
+    // now that releaseTile() actually disposes off-screen features - clearing
+    // selection here would silently drop it on every pan.
     this._hoveredFeatureIds.delete(featureId);
   }
 
@@ -365,14 +411,52 @@ export class MVTSource implements google.maps.MapType {
     this.logger.log(`Getting tile: ${zoom}/${coord.x}/${coord.y}`);
     const tileContext = this.drawTile(coord, zoom, ownerDocument);
     this._setVisibleTile(tileContext);
+    this._mountedTiles.set(tileContext.canvas, tileContext.id);
     return tileContext.canvas;
   }
 
   /**
-   * Release tile resources
+   * Release a tile that Google Maps has scrolled out of view.
+   *
+   * Google Maps calls this for every tile it discards. Without it nothing was
+   * ever freed: the feature index, each layer's feature map, and the decoded
+   * PBF buffer behind every tile grew for the lifetime of the map.
    */
-  releaseTile(): void {
-    // Implementation for tile cleanup if needed
+  releaseTile(tile?: Element | null): void {
+    if (!tile) return;
+
+    const tileId = this._mountedTiles.get(tile);
+    if (tileId === undefined) return;
+    this._mountedTiles.delete(tile);
+
+    // The same tile id can be mounted more than once (repeated worlds at low
+    // zoom). Only tear down shared state once the last copy is gone.
+    for (const id of this._mountedTiles.values()) {
+      if (id === tileId) {
+        this.logger.log(`Released one copy of tile ${tileId}; others still mounted`);
+        return;
+      }
+    }
+
+    this.logger.log(`Releasing tile: ${tileId}`);
+
+    this._abortTileRequest(tileId);
+    delete this._visibleTiles[tileId];
+
+    for (const [layerName, layer] of Object.entries(this.mVTLayers)) {
+      if (layer.releaseTile(tileId)) {
+        delete this.mVTLayers[layerName];
+      }
+    }
+
+    // With caching off, drop the decoded tile too - it pins the PBF buffer.
+    // With caching on it is deliberately retained, bounded by
+    // MAX_TILES_CACHE_SIZE, which is the point of the option.
+    if (!this._cache) {
+      delete this._tilesDrawn[tileId];
+    }
+
+    this._pendingRedraws.delete(tileId);
   }
 
   /**
@@ -389,12 +473,19 @@ export class MVTSource implements google.maps.MapType {
     }
 
     if (selectedIds.length > 0) {
-      setTimeout(() => {
-        selectedIds.forEach((featureId) => {
-          this._selectedFeatureIds.add(featureId);
-        });
+      const versionAtZoom = this._selectionVersion;
+      const timer = setTimeout(() => {
+        this._deferredTimers.delete(timer);
+        if (this._disposed) return;
+
+        // If the selection changed during the window, the user's intent wins.
+        // Re-adding blindly resurrected features deselected in those 50ms.
+        if (this._selectionVersion !== versionAtZoom) return;
+
+        selectedIds.forEach((featureId) => this._selectedFeatureIds.add(featureId));
         this._scheduleRedraw('all');
       }, 50);
+      this._deferredTimers.add(timer);
     }
   }
 
@@ -402,6 +493,10 @@ export class MVTSource implements google.maps.MapType {
    * Reset MVT layers
    */
   private _resetMVTLayers(): void {
+    // Dispose before dropping. Assigning {} released the layers by reference
+    // only, so every feature's cached geometry leaked on each zoom change and
+    // on every setUrl().
+    Object.values(this.mVTLayers).forEach((layer) => layer.dispose?.());
     this.mVTLayers = {};
     this._featureIndex.clear();
   }
@@ -417,16 +512,9 @@ export class MVTSource implements google.maps.MapType {
    * Set a tile as visible with memory management
    */
   private _setVisibleTile(tileContext: TileContext): void {
-    // Implement cache size limit to prevent memory leaks
-    const visibleTileIds = Object.keys(this._visibleTiles);
-    if (visibleTileIds.length >= MVTSource.MAX_VISIBLE_TILES_SIZE) {
-      // Remove oldest tiles (simple FIFO approach)
-      const tilesToRemove = visibleTileIds.slice(0, visibleTileIds.length - MVTSource.MAX_VISIBLE_TILES_SIZE + 1);
-      tilesToRemove.forEach((tileId) => {
-        delete this._visibleTiles[tileId];
-      });
-    }
-
+    // No FIFO cap here. The previous 50-tile limit evicted genuinely visible
+    // tiles on any viewport above ~1080p (a 4K screen needs ~135), which broke
+    // click and hover across half the map. releaseTile() now bounds this set.
     this._visibleTiles[tileContext.id] = tileContext;
   }
 
@@ -435,16 +523,19 @@ export class MVTSource implements google.maps.MapType {
    */
   drawTile(coord: google.maps.Point, zoom: number, ownerDocument: Document): TileContext {
     const id = this.getTileId(zoom, coord.x, coord.y);
-    let tileContext = this._tilesDrawn[id];
+    const cachedTile = this._tilesDrawn[id];
 
-    if (tileContext) {
+    // Always hand back a fresh canvas. A DOM node can only be in one place, so
+    // returning the cached tile's canvas a second time silently detached it
+    // from the first mount point and left that tile permanently blank.
+    const tileContext = this._createTileContext(coord, zoom, ownerDocument);
+
+    if (cachedTile) {
+      this._drawVectorTile(cachedTile, tileContext);
       return tileContext;
     }
 
-    tileContext = this._createTileContext(coord, zoom, ownerDocument);
-    this.loadedTilesLen = 0;
-    this._xhrRequest(tileContext);
-
+    this._fetchTile(tileContext);
     return tileContext;
   }
 
@@ -495,10 +586,18 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Generate tile ID
+   * Generate tile ID.
+   *
+   * `x` is wrapped into `[0, 2^zoom)`. Google Maps hands out unwrapped x for
+   * repeated world copies and across the antimeridian, so without this the
+   * stored id never matched the normalized id that hit-testing derives from
+   * `Mercator.getTileAtLatLng` - clicks were dead on every wrapped copy - and
+   * the request URL got a negative or out-of-range x that 404s.
    */
   getTileId(zoom: number, x: number, y: number): string {
-    return [zoom, x, y].join(':');
+    const worldTiles = Math.pow(2, zoom);
+    const wrappedX = ((x % worldTiles) + worldTiles) % worldTiles;
+    return [zoom, wrappedX, y].join(':');
   }
 
   /**
@@ -506,23 +605,39 @@ export class MVTSource implements google.maps.MapType {
    */
   getTileObject(id: string): TileCoord {
     const values = id.split(':');
-    return {
-      z: parseInt(values[0]),
-      x: parseInt(values[1]),
-      y: parseInt(values[2]),
-    };
+    const z = Number.parseInt(values[0], 10);
+    const x = Number.parseInt(values[1], 10);
+    const y = Number.parseInt(values[2], 10);
+
+    if (Number.isNaN(z) || Number.isNaN(x) || Number.isNaN(y)) {
+      throw new Error(`Malformed tile id: "${id}" (expected "z:x:y")`);
+    }
+
+    return { z, x, y };
   }
 
   /**
-   * Make XHR request for tile data
+   * Abort an in-flight request for a tile, if any.
    */
-  private _xhrRequest(tileContext: TileContext): void {
+  private _abortTileRequest(tileId: string): void {
+    const controller = this._tileRequests.get(tileId);
+    if (controller) {
+      controller.abort();
+      this._tileRequests.delete(tileId);
+    }
+  }
+
+  /**
+   * Fetch tile data, with cancellation, timeout and bounded retry.
+   */
+  private _fetchTile(tileContext: TileContext, attempt = 0): void {
     const id = tileContext.parentId || tileContext.id;
     const tile = this.getTileObject(id);
 
     // Check tile availability against manifest
     if (!this._isTileAvailable(tile.z, tile.x, tile.y)) {
       this.logger.log(`Tile not available according to manifest: ${tile.z}/${tile.x}/${tile.y}`);
+      this._markTileLoaded(tileContext.id);
       this._drawDebugInfo(tileContext);
       return;
     }
@@ -534,34 +649,89 @@ export class MVTSource implements google.maps.MapType {
 
     this.logger.log(`Requesting tile: ${src}`);
 
-    const xmlHttpRequest = new XMLHttpRequest();
-    xmlHttpRequest.onload = () => {
-      this.logger.log(`Tile response: ${xmlHttpRequest.status} for ${src}`);
-      if (xmlHttpRequest.status === 200 && xmlHttpRequest.response) {
-        this._xhrResponseOk(tileContext, xmlHttpRequest.response);
-      } else {
+    this._abortTileRequest(tileContext.id);
+    const controller = new AbortController();
+    this._tileRequests.set(tileContext.id, controller);
+
+    const timeoutId = setTimeout(() => controller.abort(), MVTSource.TILE_TIMEOUT_MS);
+
+    fetch(src, { headers: this._xhrHeaders, signal: controller.signal })
+      .then(async (response) => {
+        clearTimeout(timeoutId);
+        this.logger.log(`Tile response: ${response.status} for ${src}`);
+
+        // 204/304 are the conventional "nothing here" responses and are not
+        // failures; previously anything but 200 was silently blank.
+        if (response.status === 204 || response.status === 304) {
+          this._onTileSettled(tileContext, controller);
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} ${response.statusText}`);
+        }
+
+        const buffer = await response.arrayBuffer();
+        if (this._isRequestStale(tileContext, controller)) return;
+
+        this._onTileResponse(tileContext, buffer);
+        this._onTileSettled(tileContext, controller);
+      })
+      .catch((error: unknown) => {
+        clearTimeout(timeoutId);
+
+        // An abort is a deliberate cancellation, not an error.
+        if (controller.signal.aborted && !this._disposed) {
+          const timedOut = this._tileRequests.get(tileContext.id) === controller;
+          if (!timedOut) return;
+        }
+        if (this._disposed) return;
+
+        if (attempt < MVTSource.TILE_MAX_RETRIES) {
+          const backoff = MVTSource.TILE_RETRY_BASE_MS * Math.pow(2, attempt);
+          this.logger.warn(`Tile ${src} failed (attempt ${attempt + 1}), retrying in ${backoff}ms`);
+          const retryTimer = setTimeout(() => {
+            this._retryTimers.delete(retryTimer);
+            if (!this._disposed) this._fetchTile(tileContext, attempt + 1);
+          }, backoff);
+          this._retryTimers.add(retryTimer);
+          return;
+        }
+
+        // Previously every non-200 was completely silent in production: the
+        // only failure path was _drawDebugInfo, which returns immediately when
+        // debug is off.
+        this.logger.error(`Failed to load tile ${src}:`, error);
+        this._onTileSettled(tileContext, controller);
         this._drawDebugInfo(tileContext);
-      }
-    };
-
-    xmlHttpRequest.onerror = () => {
-      this.logger.error(`Failed to load tile: ${src}`);
-      this._drawDebugInfo(tileContext);
-    };
-
-    xmlHttpRequest.open('GET', src, true);
-    Object.entries(this._xhrHeaders).forEach(([header, value]) => {
-      xmlHttpRequest.setRequestHeader(header, value);
-    });
-    xmlHttpRequest.responseType = 'arraybuffer';
-    xmlHttpRequest.send();
+      });
   }
 
   /**
-   * Handle successful XHR response
+   * True when a response should be discarded because the source was disposed
+   * or the tile was released while the request was in flight.
    */
-  private _xhrResponseOk(tileContext: TileContext, response: ArrayBuffer): void {
-    if (this.map.getZoom() !== tileContext.zoom) {
+  private _isRequestStale(tileContext: TileContext, controller: AbortController): boolean {
+    if (this._disposed) return true;
+    // A newer request replaced this one, or the tile was released.
+    return this._tileRequests.get(tileContext.id) !== controller;
+  }
+
+  private _onTileSettled(tileContext: TileContext, controller: AbortController): void {
+    if (this._tileRequests.get(tileContext.id) === controller) {
+      this._tileRequests.delete(tileContext.id);
+    }
+    this._markTileLoaded(tileContext.id);
+  }
+
+  /**
+   * Decode and draw a tile response.
+   */
+  private _onTileResponse(tileContext: TileContext, response: ArrayBuffer): void {
+    // map.getZoom() is fractional during smooth zoom on vector basemaps, so
+    // comparing it directly to the integer tile zoom discarded every response.
+    const currentZoom = this.map.getZoom();
+    if (currentZoom !== undefined && Math.floor(currentZoom) !== tileContext.zoom) {
       return;
     }
 
@@ -586,19 +756,59 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Wait for all visible tiles to load
+   * Record that a tile finished loading, however it finished.
    */
-  async tileLoaded(): Promise<boolean> {
-    const lenVisibleTiles = Object.keys(this._visibleTiles).length;
+  private _markTileLoaded(tileId: string): void {
+    this._loadedTileIds.add(tileId);
+    this.loadedTilesLen = this._loadedTileIds.size;
+  }
+
+  /**
+   * True when every currently visible tile has settled.
+   */
+  private _allVisibleTilesLoaded(): boolean {
+    const visibleIds = Object.keys(this._visibleTiles);
+    if (visibleIds.length === 0) return false;
+    return visibleIds.every((id) => this._loadedTileIds.has(id));
+  }
+
+  /**
+   * Resolve once every visible tile has settled.
+   *
+   * `loadedTilesLen` was only ever assigned 0 and never incremented, so the
+   * old resolve condition was unsatisfiable: each call spawned a self-
+   * recursive setTimeout that ran forever and never settled its promise.
+   *
+   * @param timeoutMs Give up after this long and resolve `false`.
+   */
+  async tileLoaded(timeoutMs = MVTSource.TILE_TIMEOUT_MS): Promise<boolean> {
+    if (this._allVisibleTilesLoaded()) return true;
 
     return new Promise((resolve) => {
-      if (lenVisibleTiles && lenVisibleTiles === this.loadedTilesLen) {
-        resolve(true);
-      } else {
-        setTimeout(() => {
-          void this.tileLoaded().then(resolve, () => resolve(false));
+      const deadline = Date.now() + timeoutMs;
+
+      const poll = (): void => {
+        if (this._disposed) {
+          resolve(false);
+          return;
+        }
+        if (this._allVisibleTilesLoaded()) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          this.logger.warn('tileLoaded() timed out waiting for visible tiles');
+          resolve(false);
+          return;
+        }
+        const timer = setTimeout(() => {
+          this._tileLoadedTimers.delete(timer);
+          poll();
         }, 100);
-      }
+        this._tileLoadedTimers.add(timer);
+      };
+
+      poll();
     });
   }
 
@@ -618,7 +828,9 @@ export class MVTSource implements google.maps.MapType {
       });
     }
 
-    this._tilesDrawn[tileContext.id] = tileContext;
+    if (tileContext.vectorTile) {
+      this._tilesDrawn[tileContext.id] = tileContext.vectorTile;
+    }
   }
 
   /**
@@ -778,6 +990,19 @@ export class MVTSource implements google.maps.MapType {
         }
       });
       this._eventListeners.push(mouseMoveListener);
+
+      // Without this, moving the pointer off the map (or onto a control) left
+      // the last feature stuck in hover style indefinitely - hover was only
+      // ever cleared by a mousemove that landed on empty space.
+      const mouseOutListener = this.map.addListener('mouseout', () => {
+        this.event = null;
+        if (this._hoverTimer) {
+          clearTimeout(this._hoverTimer);
+          this._hoverTimer = null;
+        }
+        this.clearAllHoveredFeatures();
+      });
+      this._eventListeners.push(mouseOutListener);
     }
   }
 
@@ -835,7 +1060,10 @@ export class MVTSource implements google.maps.MapType {
     }
 
     this.event = event;
-    setTimeout(() => {
+    if (this._hoverTimer) clearTimeout(this._hoverTimer);
+    this._hoverTimer = setTimeout(() => {
+      this._hoverTimer = null;
+      if (this._disposed) return;
       if (event === this.event) {
         this._mouseEventContinue(event, callbackFunction, options);
       }
@@ -851,7 +1079,9 @@ export class MVTSource implements google.maps.MapType {
     options?: MouseEventOptions,
   ): void {
     const callback = callbackFunction || (() => {});
-    const zoom = this.map.getZoom() || 0;
+    // Tile lookup needs the integer tile zoom; map.getZoom() is fractional
+    // during smooth zoom on vector basemaps.
+    const zoom = Math.floor(this.map.getZoom() ?? 0);
     const tile = Mercator.getTileAtLatLng(event.latLng, zoom);
     const id = this.getTileId(tile.z, tile.x, tile.y);
     const tileContext = this._visibleTiles[id];
@@ -867,20 +1097,29 @@ export class MVTSource implements google.maps.MapType {
     event.tileContext = tileContext;
     event.tilePoint = Mercator.fromLatLngToTilePoint(this.map, event);
 
+    // Resolve the hit across all clickable layers FIRST, then act on it once.
+    // Previously _mouseSelectedFeature ran inside this loop, so a single click
+    // fired the user's callback once per layer, a feature present in two
+    // layers was selected by one and immediately deselected by the next, and
+    // a layer that found nothing called clearAllHoveredFeatures(), wiping the
+    // hover a previous layer had just set.
     const clickableLayers = this._clickableLayers || Object.keys(this.mVTLayers);
+    let hit: MVTFeature | undefined;
+
     for (let i = clickableLayers.length - 1; i >= 0; i--) {
       const key = clickableLayers[i];
       const layer = this.mVTLayers[key];
+      if (!layer) continue;
 
-      if (layer) {
-        const processedEvent = layer.handleClickEvent(event, this);
-        this._mouseSelectedFeature(processedEvent, callback, options ?? {});
-
-        if (options?.limitToFirstVisibleLayer && processedEvent.feature) {
-          break;
-        }
+      const processedEvent = layer.handleClickEvent(event, this);
+      if (processedEvent.feature) {
+        hit = processedEvent.feature as MVTFeature;
+        if (options?.limitToFirstVisibleLayer) break;
       }
     }
+
+    event.feature = hit;
+    this._mouseSelectedFeature(event, callback, options ?? {});
   }
 
   /**
@@ -940,6 +1179,7 @@ export class MVTSource implements google.maps.MapType {
     }
 
     this._selectedFeatureIds.add(featureId);
+    this._selectionVersion++;
     const feature = this._featureIndex.get(featureId);
 
     if (feature) {
@@ -962,6 +1202,7 @@ export class MVTSource implements google.maps.MapType {
    */
   private _deselectFeature(featureId: string | number): void {
     this._selectedFeatureIds.delete(featureId);
+    this._selectionVersion++;
 
     // Cancel any pending replacement requests for this feature
     const pendingRequest = this._pendingReplacementRequests.get(featureId);
@@ -1219,6 +1460,7 @@ export class MVTSource implements google.maps.MapType {
 
     for (const featureId of featureIds) {
       this._selectedFeatureIds.delete(featureId);
+      this._selectionVersion++;
 
       const pendingRequest = this._pendingReplacementRequests.get(featureId);
       if (pendingRequest) {
@@ -1258,6 +1500,7 @@ export class MVTSource implements google.maps.MapType {
       }
 
       this._selectedFeatureIds.add(featureId);
+      this._selectionVersion++;
       const feature = this._featureIndex.get(featureId);
 
       if (feature) {
@@ -1283,6 +1526,7 @@ export class MVTSource implements google.maps.MapType {
     const selectedIds = Array.from(this._selectedFeatureIds);
 
     this._selectedFeatureIds.clear();
+    this._selectionVersion++;
 
     this._pendingReplacementRequests.forEach((controller) => {
       controller.abort();
@@ -1476,7 +1720,18 @@ export class MVTSource implements google.maps.MapType {
    */
   setUrl(url: string, redrawTiles = true): void {
     this._url = url;
+
+    // Abort requests aimed at the old URL before they can land as new tiles.
+    this._tileRequests.forEach((controller) => controller.abort());
+    this._tileRequests.clear();
+
     this._resetMVTLayers();
+
+    // Drop cached tiles too. Without this, `cache: true` kept serving tiles
+    // fetched from the previous URL.
+    this._tilesDrawn = {};
+    this._loadedTileIds.clear();
+    this.loadedTilesLen = 0;
 
     if (redrawTiles) {
       this._scheduleRedraw('all');
@@ -1534,18 +1789,25 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Set up click and hover handlers for GeoJSON overlays
    */
+  /**
+   * Resolve a Data.Feature overlay back to its MVT feature id.
+   *
+   * Uses a reverse map rather than Object.entries(this._geoJSONOverlays),
+   * whose keys are always strings. For the common case of a numeric feature id
+   * that produced `"123"` instead of `123`, so the id never matched
+   * `_selectedFeatureIds` or `_featureIndex`: clicking an overlay to deselect
+   * it added an unreachable ghost entry to the selection set instead.
+   */
+  private _findOverlayFeatureId(overlay: google.maps.Data.Feature | undefined): string | number | null {
+    if (!overlay) return null;
+    return this._overlayToFeatureId.get(overlay) ?? null;
+  }
+
   private _setupGeoJSONClickHandlers(): void {
     // Click handler
     const dataClickListener = this.map.data.addListener('click', (event: google.maps.Data.MouseEvent) => {
       if (event.feature) {
-        let featureId: string | number | null = null;
-
-        for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
-          if (overlay === event.feature) {
-            featureId = id;
-            break;
-          }
-        }
+        const featureId = this._findOverlayFeatureId(event.feature);
 
         if (featureId !== null) {
           this.logger.log(`GeoJSON overlay clicked for feature ID: ${featureId}`);
@@ -1562,14 +1824,7 @@ export class MVTSource implements google.maps.MapType {
 
     const dataMouseOverListener = this.map.data.addListener('mouseover', (event: google.maps.Data.MouseEvent) => {
       if (event.feature && this._onMouseHoverCallback) {
-        let featureId: string | number | null = null;
-
-        for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
-          if (overlay === event.feature) {
-            featureId = id;
-            break;
-          }
-        }
+        const featureId = this._findOverlayFeatureId(event.feature);
 
         if (featureId !== null) {
           const mvtEvent: MVTMouseEvent = {
@@ -1589,14 +1844,7 @@ export class MVTSource implements google.maps.MapType {
 
     const dataMouseMoveListener = this.map.data.addListener('mousemove', (event: google.maps.Data.MouseEvent) => {
       if (event.feature && this._onMouseHoverCallback) {
-        let featureId: string | number | null = null;
-
-        for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
-          if (overlay === event.feature) {
-            featureId = id;
-            break;
-          }
-        }
+        const featureId = this._findOverlayFeatureId(event.feature);
 
         if (featureId !== null) {
           const mvtEvent: MVTMouseEvent = {
@@ -1642,6 +1890,7 @@ export class MVTSource implements google.maps.MapType {
 
       if (dataFeature) {
         this._geoJSONOverlays[featureId] = dataFeature;
+        this._overlayToFeatureId.set(dataFeature, featureId);
         this.map.data.overrideStyle(dataFeature, this._getGeoJSONSelectedStyle());
         this.logger.log(`Added GeoJSON overlay for feature ${featureId}`);
       }
@@ -1659,6 +1908,7 @@ export class MVTSource implements google.maps.MapType {
       try {
         this.map.data.remove(overlay);
         delete this._geoJSONOverlays[featureId];
+        this._overlayToFeatureId.delete(overlay);
         this.logger.log(`Removed GeoJSON overlay for feature ${featureId}`);
       } catch (error) {
         this.logger.error(`Failed to remove GeoJSON overlay for feature ${featureId}:`, error);
@@ -2242,7 +2492,37 @@ export class MVTSource implements google.maps.MapType {
    * Cleanup method for when layer is removed
    */
   dispose(): void {
+    if (this._disposed) return;
     this.logger.log('Disposing MVTSource and cleaning up all resources');
+
+    // Set first: in-flight fetches and queued timers check this before
+    // touching state, so nothing can revive the source mid-teardown.
+    this._disposed = true;
+
+    // Abort every in-flight tile fetch. These were previously left running,
+    // and a late response re-created mVTLayers entries and re-populated
+    // _tilesDrawn, half-reviving a torn-down source.
+    this._tileRequests.forEach((controller) => controller.abort());
+    this._tileRequests.clear();
+
+    // Cancel every timer. Only _redrawDebounceTimer used to be cleared.
+    this._retryTimers.forEach(clearTimeout);
+    this._retryTimers.clear();
+    this._tileLoadedTimers.forEach(clearTimeout);
+    this._tileLoadedTimers.clear();
+    this._deferredTimers.forEach(clearTimeout);
+    this._deferredTimers.clear();
+    if (this._hoverTimer) {
+      clearTimeout(this._hoverTimer);
+      this._hoverTimer = null;
+    }
+    if (this._redrawDebounceTimer) {
+      clearTimeout(this._redrawDebounceTimer);
+      this._redrawDebounceTimer = null;
+    }
+
+    // Deselect before dropping the overlays it needs to clean up.
+    this.deselectAllFeatures();
 
     // Remove self from map's overlay types
     try {
@@ -2272,8 +2552,7 @@ export class MVTSource implements google.maps.MapType {
       }
     });
     this._geoJSONOverlays = {};
-
-    this.deselectAllFeatures();
+    this._overlayToFeatureId.clear();
 
     // Cancel any remaining pending replacement requests (should already be done by deselectAllFeatures)
     this._pendingReplacementRequests.forEach((controller) => {
@@ -2281,26 +2560,28 @@ export class MVTSource implements google.maps.MapType {
     });
     this._pendingReplacementRequests.clear();
 
-    this._featureIndex.clear();
-    this._selectedFeatureIds.clear();
-    this._hoveredFeatureIds.clear();
-    this._tilesDrawn = {};
-    this._visibleTiles = {};
-    this._replacedFeatures = {};
-
-    this._styleCache.clear();
-    this._pendingRedraws.clear();
-    if (this._redrawDebounceTimer) {
-      clearTimeout(this._redrawDebounceTimer);
-      this._redrawDebounceTimer = null;
-    }
-
+    // Dispose layers before clearing the index so each feature can drop its
+    // decoded tile data; previously the whole graph was dropped by reference
+    // and its cached geometry leaked.
     Object.values(this.mVTLayers).forEach((layer) => {
       if (layer.dispose) {
         layer.dispose();
       }
     });
     this.mVTLayers = {};
+
+    this._featureIndex.clear();
+    this._selectedFeatureIds.clear();
+    this._hoveredFeatureIds.clear();
+    this._tilesDrawn = {};
+    this._visibleTiles = {};
+    this._replacedFeatures = {};
+    this._mountedTiles.clear();
+    this._loadedTileIds.clear();
+    this.loadedTilesLen = 0;
+
+    this._styleCache.clear();
+    this._pendingRedraws.clear();
 
     this.logger.log('MVTSource disposal complete');
   }

@@ -8,7 +8,6 @@ import {
   GeometryType,
   CustomDrawFunction,
 } from './types';
-import { ContextPool } from './ContextPool';
 
 /**
  * MVTFeature - Represents individual vector features with drawing and interaction capabilities
@@ -27,14 +26,15 @@ export class MVTFeature {
   public type: number;
   public properties: Record<string, any>;
 
-  private _contextPool: ContextPool = ContextPool.getInstance();
   private _cachedPaths: Map<string, Point[][]> = new Map();
   private static readonly MAX_CACHE_SIZE = 50;
   private _draw: CustomDrawFunction;
 
   private _path2dVersion: number = 0;
-  private _geometryHash: string | null = null;
-  private _contextsInUse: Map<string, CanvasRenderingContext2D> = new Map();
+
+  /** Geometry hash per tile id. Keyed per tile because the same feature has
+   *  different device coordinates in each tile it spans. */
+  private _geometryHashes: Map<string, string> = new Map();
 
   constructor(options: MVTFeatureOptions) {
     this.mVTSource = options.mVTSource;
@@ -62,9 +62,31 @@ export class MVTFeature {
       paths2d: null,
     };
 
-    this._releaseAllContexts();
-    this._cachedPaths.delete(tileContext.id);
-    this._invalidatePath2DCache();
+    // Only this tile's caches are stale. Previously every tile of the feature
+    // was invalidated here, rebuilding every Path2D each time one tile arrived.
+    this._invalidateTileCaches(tileContext.id);
+  }
+
+  /**
+   * Drop a tile from this feature and report how many remain.
+   *
+   * Called when Google Maps releases a tile. Returns the number of tiles the
+   * feature still occupies so the layer can discard features that are no
+   * longer on screen.
+   */
+  removeTile(tileId: string): number {
+    delete this.tiles[tileId];
+    this._invalidateTileCaches(tileId);
+    return Object.keys(this.tiles).length;
+  }
+
+  /**
+   * Drop cached geometry for a single tile.
+   */
+  private _invalidateTileCaches(tileId: string): void {
+    this._cachedPaths.delete(tileId);
+    this._geometryHashes.delete(tileId);
+    this._path2dVersion++;
   }
 
   /**
@@ -86,17 +108,13 @@ export class MVTFeature {
    */
   setStyle(style: FeatureStyle): void {
     this.style = style;
-    this._releaseAllContexts();
   }
 
   /**
    * Set selection state without redrawing (handled by source)
    */
   setSelected(selected: boolean): void {
-    if (this.selected !== selected) {
-      this.selected = selected;
-      this._releaseAllContexts();
-    }
+    this.selected = selected;
   }
 
   /**
@@ -159,7 +177,9 @@ export class MVTFeature {
    * Default drawing with cached contexts
    */
   defaultDraw(tileContext: TileContext, tile: TileFeatureData, style: FeatureStyle): void {
-    const context2d = this._getOptimizedContext2d(tileContext.canvas, style, tileContext.id);
+    const context2d = tileContext.canvas.getContext('2d');
+    if (!context2d) return;
+    this._applyStyleToContext(context2d, style);
 
     switch (this.type) {
       case GeometryType.Point:
@@ -175,36 +195,7 @@ export class MVTFeature {
   }
 
   /**
-   * Get optimized canvas context using context pool for large operations only
-   */
-  private _getOptimizedContext2d(
-    canvas: HTMLCanvasElement,
-    style: FeatureStyle,
-    tileId: string,
-  ): CanvasRenderingContext2D {
-    // Only use pooling for complex multi-tile features (5+ tiles)
-    const tileCount = Object.keys(this.tiles).length;
-    if (tileCount < 5) {
-      const context2d = canvas.getContext('2d')!;
-      this._applyStyleToContext(context2d, style);
-      return context2d;
-    }
-
-    const styleHash = ContextPool.createStyleHash(style);
-    const cacheKey = `${tileId}_${styleHash}`;
-
-    let context2d = this._contextsInUse.get(cacheKey);
-
-    if (!context2d) {
-      context2d = this._contextPool.acquire(canvas, style, styleHash);
-      this._contextsInUse.set(cacheKey, context2d);
-    }
-
-    return context2d;
-  }
-
-  /**
-   * Apply style properties directly to context (lightweight version)
+   * Apply style properties directly to context
    */
   private _applyStyleToContext(context: CanvasRenderingContext2D, style: FeatureStyle): void {
     if (style.fillStyle) {
@@ -218,23 +209,6 @@ export class MVTFeature {
     }
     context.lineCap = 'round';
     context.lineJoin = 'round';
-  }
-
-  /**
-   * Release all contexts back to pool
-   */
-  private _releaseAllContexts(): void {
-    // Skip pool overhead for simple cases - just clear the map
-    if (this._contextsInUse.size <= 3) {
-      this._contextsInUse.clear();
-      return;
-    }
-
-    // Only use pool for complex multi-tile features
-    this._contextsInUse.forEach((context) => {
-      this._contextPool.release(context);
-    });
-    this._contextsInUse.clear();
   }
 
   /**
@@ -287,8 +261,9 @@ export class MVTFeature {
   ): void {
     const paths2d = this._getOptimizedPaths2D(tileContext, tile);
     if (paths2d) {
-      paths2d.closePath();
-
+      // Rings are closed individually when the Path2D is built. Calling
+      // closePath() here only closed the *last* subpath, leaving a visible gap
+      // in every other ring, and mutated the cached Path2D on every redraw.
       if (style.fillStyle) {
         context2d.fill(paths2d);
       }
@@ -319,7 +294,7 @@ export class MVTFeature {
 
   private _invalidatePath2DCache(): void {
     this._path2dVersion++;
-    this._geometryHash = null;
+    this._geometryHashes.clear();
 
     Object.values(this.tiles).forEach((tile) => {
       tile.paths2d = null;
@@ -327,28 +302,27 @@ export class MVTFeature {
   }
 
   /**
-   * Get cached Path2D objects with enhanced invalidation
+   * Get cached Path2D for a tile, rebuilding only when its geometry changed.
+   *
+   * The cached Path2D is returned as-is; callers must not mutate it (see
+   * `drawPolygon`, which closes rings at build time rather than per draw).
    */
   private _getOptimizedPaths2D(tileContext: TileContext, tile: TileFeatureData): Path2D | null {
+    // A valid cache entry means the decoded geometry cannot have changed, so
+    // return before calling loadGeometry() - the decode dominates this path.
+    const cachedHash = this._geometryHashes.get(tileContext.id);
+    if (tile.paths2d && cachedHash) {
+      return tile.paths2d;
+    }
+
     const coordinates = tile.vectorTileFeature.loadGeometry();
 
     if (!coordinates || coordinates.length === 0) {
       return null;
     }
 
-    // For simple geometries, skip all caching overhead
-    const totalPoints = coordinates.reduce((sum, coord) => sum + (coord ? coord.length : 0), 0);
-    if (totalPoints < 50) {
-      return this._createSimplePath2D(coordinates, tileContext, tile.divisor);
-    }
-
-    const currentGeometryHash = this._createGeometryHash(coordinates);
-    const needsRecreation = !tile.paths2d || this._geometryHash !== currentGeometryHash || !this._geometryHash;
-
-    if (needsRecreation) {
-      tile.paths2d = this._createSimplePath2D(coordinates, tileContext, tile.divisor);
-      this._geometryHash = currentGeometryHash;
-    }
+    tile.paths2d = this._createSimplePath2D(coordinates, tileContext, tile.divisor);
+    this._geometryHashes.set(tileContext.id, this._createGeometryHash(coordinates));
 
     return tile.paths2d;
   }
@@ -378,6 +352,12 @@ export class MVTFeature {
       }
 
       if (hasValidPoints) {
+        // Close each ring as it is built. Polygons need every ring closed for
+        // both stroking and the nonzero fill rule; closing the aggregate path
+        // afterwards would only close the last one.
+        if (this.type === GeometryType.Polygon) {
+          path2.closePath();
+        }
         paths2d.addPath(path2);
       }
     }
@@ -441,13 +421,16 @@ export class MVTFeature {
     const currentTile = this.mVTSource.getTileObject(tileContext.id);
     const zoomDistance = currentTile.z - parentTile.z;
 
-    const scale = 1 << zoomDistance; // Faster than Math.pow(2, zoomDistance)
+    // Math.pow rather than `1 << n`, which overflows to a negative for n >= 31.
+    const scale = Math.pow(2, zoomDistance);
 
     const xScale = point.x * scale;
     const yScale = point.y * scale;
 
-    const xtileOffset = currentTile.x % scale;
-    const ytileOffset = currentTile.y % scale;
+    // `%` keeps the sign of the dividend in JS, so a negative tile x (an
+    // unwrapped world copy) produced a negative offset and drew off-canvas.
+    const xtileOffset = ((currentTile.x % scale) + scale) % scale;
+    const ytileOffset = ((currentTile.y % scale) + scale) % scale;
 
     return {
       x: xScale - xtileOffset * tileContext.tileSize,
@@ -467,7 +450,8 @@ export class MVTFeature {
     const paths2d = this._getOptimizedPaths2D(tileContext, tile);
     if (!paths2d) return false;
 
-    const context2d = tileContext.canvas.getContext('2d')!;
+    const context2d = tileContext.canvas.getContext('2d');
+    if (!context2d) return false;
     return context2d.isPointInPath(paths2d, point.x, point.y);
   }
 
@@ -484,9 +468,10 @@ export class MVTFeature {
    * Cleanup method to clear caches
    */
   dispose(): void {
-    this._releaseAllContexts();
     this._cachedPaths.clear();
     this._invalidatePath2DCache();
+    // Drop references to the decoded tile data, which pins the PBF buffer.
+    this.tiles = {};
 
     if (this.mVTSource.unregisterFeature) {
       this.mVTSource.unregisterFeature(this.featureId);
