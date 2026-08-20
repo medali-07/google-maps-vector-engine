@@ -1,5 +1,6 @@
 # 🗺️ Google Maps Vector Engine
 
+[![CI](https://github.com/medali-07/google-maps-vector-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/medali-07/google-maps-vector-engine/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/google-maps-vector-engine)](https://www.npmjs.com/package/google-maps-vector-engine)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-blue)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -118,7 +119,7 @@ See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for 
 
 ## 📦 Requirements
 
-- Node.js 16+
+- Node.js 18+
 - Google Maps API key
 - Modern browser with ES6+ support
 

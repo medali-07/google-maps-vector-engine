@@ -192,9 +192,9 @@ export class MVTFeature {
 
     const styleHash = ContextPool.createStyleHash(style);
     const cacheKey = `${tileId}_${styleHash}`;
-    
+
     let context2d = this._contextsInUse.get(cacheKey);
-    
+
     if (!context2d) {
       context2d = this._contextPool.acquire(canvas, style, styleHash);
       this._contextsInUse.set(cacheKey, context2d);
@@ -229,14 +229,13 @@ export class MVTFeature {
       this._contextsInUse.clear();
       return;
     }
-    
+
     // Only use pool for complex multi-tile features
     this._contextsInUse.forEach((context) => {
       this._contextPool.release(context);
     });
     this._contextsInUse.clear();
   }
-
 
   /**
    * Draw point geometry
@@ -301,7 +300,7 @@ export class MVTFeature {
 
   private _createGeometryHash(coordinates: any[]): string {
     if (!coordinates || coordinates.length === 0) return 'empty';
-    
+
     let hash = `rings:${coordinates.length}`;
     for (let i = 0; i < Math.min(coordinates.length, 3); i++) {
       if (coordinates[i] && coordinates[i].length > 0) {
@@ -321,8 +320,8 @@ export class MVTFeature {
   private _invalidatePath2DCache(): void {
     this._path2dVersion++;
     this._geometryHash = null;
-    
-    Object.values(this.tiles).forEach(tile => {
+
+    Object.values(this.tiles).forEach((tile) => {
       tile.paths2d = null;
     });
   }
@@ -332,7 +331,7 @@ export class MVTFeature {
    */
   private _getOptimizedPaths2D(tileContext: TileContext, tile: TileFeatureData): Path2D | null {
     const coordinates = tile.vectorTileFeature.loadGeometry();
-    
+
     if (!coordinates || coordinates.length === 0) {
       return null;
     }
@@ -344,9 +343,7 @@ export class MVTFeature {
     }
 
     const currentGeometryHash = this._createGeometryHash(coordinates);
-    const needsRecreation = !tile.paths2d || 
-                           this._geometryHash !== currentGeometryHash ||
-                           !this._geometryHash;
+    const needsRecreation = !tile.paths2d || this._geometryHash !== currentGeometryHash || !this._geometryHash;
 
     if (needsRecreation) {
       tile.paths2d = this._createSimplePath2D(coordinates, tileContext, tile.divisor);
@@ -358,20 +355,20 @@ export class MVTFeature {
 
   private _createSimplePath2D(coordinates: any[], tileContext: TileContext, divisor: number): Path2D {
     const paths2d = new Path2D();
-    
+
     for (let i = 0; i < coordinates.length; i++) {
       const coordinate = coordinates[i];
-      
+
       if (!coordinate || coordinate.length === 0) continue;
-      
+
       const path2 = new Path2D();
       let hasValidPoints = false;
 
       for (let j = 0; j < coordinate.length; j++) {
         const point = this._getPoint(coordinate[j], tileContext, divisor);
-        
+
         if (isNaN(point.x) || isNaN(point.y)) continue;
-        
+
         if (j === 0) {
           path2.moveTo(point.x, point.y);
           hasValidPoints = true;
@@ -379,7 +376,7 @@ export class MVTFeature {
           path2.lineTo(point.x, point.y);
         }
       }
-      
+
       if (hasValidPoints) {
         paths2d.addPath(path2);
       }

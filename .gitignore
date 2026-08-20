@@ -1,9 +1,9 @@
 # Dependencies
+# package-lock.json is intentionally committed so `npm ci` and Dependabot work.
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
 yarn.lock
 
 # Build outputs
@@ -34,6 +34,15 @@ pids
 # Coverage directory used by tools like istanbul
 coverage/
 *.lcov
+
+# Generated performance reports (scripts/run-performance-tests.js --output=...)
+performance-report.md
+benchmark-report.md
+memory-report.md
+full-performance-report.md
+
+# Agent / editor scratch
+.claude/
 
 # Environment variables
 .env

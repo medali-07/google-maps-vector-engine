@@ -5,8 +5,9 @@ import { MVTFeature } from './MVTFeature';
 import { Mercator } from './Mercator';
 import { ColorUtils } from './ColorUtils';
 import { createLogger, debugLogger } from './DebugLogger';
-// @ts-ignore - Turf types have module resolution issues
-import { polygon, buffer, intersect, union, Feature, Polygon, MultiPolygon, Properties } from '@turf/turf';
+// @ts-expect-error - Turf 7 removed the `Properties` export; the whole import is
+// replaced by granular @turf/union + @turf/intersect packages in Phase 5.
+import { polygon, intersect, union, Feature, Polygon, MultiPolygon, Properties } from '@turf/turf';
 import {
   MVTSourceOptions,
   TileContext,
@@ -594,9 +595,8 @@ export class MVTSource implements google.maps.MapType {
       if (lenVisibleTiles && lenVisibleTiles === this.loadedTilesLen) {
         resolve(true);
       } else {
-        setTimeout(async () => {
-          const result = await this.tileLoaded();
-          resolve(result);
+        setTimeout(() => {
+          void this.tileLoaded().then(resolve, () => resolve(false));
         }, 100);
       }
     });
@@ -949,7 +949,9 @@ export class MVTSource implements google.maps.MapType {
       if (this._featureSelectionCallback) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
-          this._callFeatureSelectionCallback(featureId, vectorFeature, true);
+          void this._callFeatureSelectionCallback(featureId, vectorFeature, true).catch((error) => {
+            this.logger.error('Feature selection callback failed:', error);
+          });
         }
       }
     }
@@ -977,7 +979,9 @@ export class MVTSource implements google.maps.MapType {
       if (this._featureSelectionCallback) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
-          this._callFeatureSelectionCallback(featureId, vectorFeature, false);
+          void this._callFeatureSelectionCallback(featureId, vectorFeature, false).catch((error) => {
+            this.logger.error('Feature selection callback failed:', error);
+          });
         }
       }
     }
@@ -991,9 +995,9 @@ export class MVTSource implements google.maps.MapType {
    */
   deselectAllFeatures(): void {
     const hadSelections = this._selectedFeatureIds.size > 0;
-    
+
     this._batchDeselectAllFeatures();
-    
+
     if (hadSelections) {
       this._scheduleRedraw('all');
     }
@@ -1174,16 +1178,16 @@ export class MVTSource implements google.maps.MapType {
    */
   addToSelection(featureIds: (string | number)[]): void {
     if (featureIds.length === 0) return;
-    
+
     this._multipleSelection = true;
     const newSelections: (string | number)[] = [];
-    
+
     for (const featureId of featureIds) {
       if (!this._selectedFeatureIds.has(featureId)) {
         newSelections.push(featureId);
       }
     }
-    
+
     if (newSelections.length > 0) {
       this._batchSelectFeatures(newSelections);
       this._scheduleRedraw('all');
@@ -1195,15 +1199,15 @@ export class MVTSource implements google.maps.MapType {
    */
   removeFromSelection(featureIds: (string | number)[]): void {
     if (featureIds.length === 0) return;
-    
+
     const toRemove: (string | number)[] = [];
-    
+
     for (const featureId of featureIds) {
       if (this._selectedFeatureIds.has(featureId)) {
         toRemove.push(featureId);
       }
     }
-    
+
     if (toRemove.length > 0) {
       this._batchDeselectFeatures(toRemove);
       this._scheduleRedraw('all');
@@ -1229,9 +1233,7 @@ export class MVTSource implements google.maps.MapType {
         if (this._featureSelectionCallback) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
-            callbackPromises.push(
-              this._callFeatureSelectionCallback(featureId, vectorFeature, false)
-            );
+            callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, false));
           }
         }
       }
@@ -1241,7 +1243,7 @@ export class MVTSource implements google.maps.MapType {
     }
 
     if (callbackPromises.length > 0) {
-      Promise.all(callbackPromises).catch(error => {
+      Promise.all(callbackPromises).catch((error) => {
         this.logger.warn('Error in batch deselection callbacks:', error);
       });
     }
@@ -1264,16 +1266,14 @@ export class MVTSource implements google.maps.MapType {
         if (this._featureSelectionCallback) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
-            callbackPromises.push(
-              this._callFeatureSelectionCallback(featureId, vectorFeature, true)
-            );
+            callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, true));
           }
         }
       }
     }
 
     if (callbackPromises.length > 0) {
-      Promise.all(callbackPromises).catch(error => {
+      Promise.all(callbackPromises).catch((error) => {
         this.logger.warn('Error in batch selection callbacks:', error);
       });
     }
@@ -1281,7 +1281,7 @@ export class MVTSource implements google.maps.MapType {
 
   private _batchDeselectAllFeatures(): void {
     const selectedIds = Array.from(this._selectedFeatureIds);
-    
+
     this._selectedFeatureIds.clear();
 
     this._pendingReplacementRequests.forEach((controller) => {
@@ -1299,19 +1299,17 @@ export class MVTSource implements google.maps.MapType {
         if (this._featureSelectionCallback) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
-            callbackPromises.push(
-              this._callFeatureSelectionCallback(featureId, vectorFeature, false)
-            );
+            callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, false));
           }
         }
       }
-      
+
       this._removeGeoJSONOverlay(featureId);
       delete this._replacedFeatures[featureId];
     });
 
     if (callbackPromises.length > 0) {
-      Promise.all(callbackPromises).catch(error => {
+      Promise.all(callbackPromises).catch((error) => {
         this.logger.warn('Error in batch deselection callbacks:', error);
       });
     }
@@ -1368,10 +1366,18 @@ export class MVTSource implements google.maps.MapType {
   private _createFeatureHash(feature: VectorTileFeature): string {
     const props = feature.properties || {};
     const keyProps = [
-      'type', 'category', 'class', 'subtype', 'importance', 'level',
-      'land_use', 'population_density', 'area', 'length'
+      'type',
+      'category',
+      'class',
+      'subtype',
+      'importance',
+      'level',
+      'land_use',
+      'population_density',
+      'area',
+      'length',
     ];
-    
+
     let hash = `t${feature.type}`;
     for (const prop of keyProps) {
       if (props[prop] !== undefined) {
@@ -1390,7 +1396,7 @@ export class MVTSource implements google.maps.MapType {
     if (this._styleCache.size >= MVTSource.MAX_STYLE_CACHE_SIZE) {
       const entries = Array.from(this._styleCache.entries());
       const keepCount = Math.floor(MVTSource.MAX_STYLE_CACHE_SIZE * 0.7);
-      
+
       this._styleCache.clear();
       entries.slice(-keepCount).forEach(([key, value]) => {
         this._styleCache.set(key, value);
@@ -1405,7 +1411,7 @@ export class MVTSource implements google.maps.MapType {
     const isSelected = this._selectedFeatureIds.has(featureId);
     const isHovered = this._hoveredFeatureIds.has(featureId);
     const baseStyle = typeof this.style === 'function' ? this.style(feature) : this.style;
-    
+
     // Fast path: static style with no state changes
     if (typeof this.style !== 'function' && !isSelected && !isHovered) {
       return baseStyle;
@@ -1413,7 +1419,7 @@ export class MVTSource implements google.maps.MapType {
 
     // Fast path: only use cache if we have significant load (>100 features or function styles)
     const shouldUseCache = typeof this.style === 'function' || this._featureIndex.size > 100;
-    
+
     if (shouldUseCache) {
       const cacheKey = this._getStyleCacheKey(feature, featureId);
       const cachedStyle = this._styleCache.get(cacheKey);

@@ -23,7 +23,7 @@ export class ColorUtils {
     if (this._colorCache.size >= this.MAX_CACHE_SIZE) {
       const entries = Array.from(this._colorCache.entries());
       const keepCount = Math.floor(this.MAX_CACHE_SIZE * 0.7);
-      
+
       this._colorCache.clear();
       entries.slice(-keepCount).forEach(([key, value]) => {
         this._colorCache.set(key, value);
@@ -37,16 +37,16 @@ export class ColorUtils {
    */
   static convertColorWithOpacity(colorStr: string, opacity: number): string {
     if (colorStr === 'transparent') return 'transparent';
-    
+
     const cacheKey = colorStr.toLowerCase();
     let rgbValues = this._colorCache.get(cacheKey);
-    
+
     if (rgbValues === undefined) {
       rgbValues = this._parseColorInternal(colorStr);
       this._cleanupCache();
       this._colorCache.set(cacheKey, rgbValues);
     }
-    
+
     if (rgbValues) {
       return `rgba(${rgbValues.r}, ${rgbValues.g}, ${rgbValues.b}, ${opacity})`;
     }
@@ -56,7 +56,7 @@ export class ColorUtils {
 
   private static _parseColorInternal(colorStr: string): { r: number; g: number; b: number; a?: number } | null {
     const lowerColor = colorStr.toLowerCase().trim();
-    
+
     const commonColor = this.COMMON_COLORS.get(lowerColor);
     if (commonColor) {
       return commonColor;
@@ -128,13 +128,13 @@ export class ColorUtils {
   static parseRgb(colorStr: string): { r: number; g: number; b: number; a?: number } | null {
     const cacheKey = colorStr.toLowerCase().trim();
     let cachedResult = this._colorCache.get(cacheKey);
-    
+
     if (cachedResult === undefined) {
       cachedResult = this._parseColorInternal(colorStr);
       this._cleanupCache();
       this._colorCache.set(cacheKey, cachedResult);
     }
-    
+
     return cachedResult;
   }
 }

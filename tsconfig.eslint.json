@@ -1,0 +1,11 @@
+{
+  "//": "Type-aware linting only. Widens `include` to cover tests, scripts and config files, which the build tsconfigs deliberately exclude.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["index.ts", "src/**/*", "tests/**/*", "scripts/**/*", "*.js", "*.mjs"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}

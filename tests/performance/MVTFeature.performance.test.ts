@@ -9,10 +9,25 @@ import { GeometryType } from '../../src/types';
 // Mock Google Maps environment
 const mockGoogleMaps = {
   maps: {
-    Size: class { constructor(public width: number, public height: number) {} },
-    Point: class { constructor(public x: number, public y: number) {} },
-    LatLng: class { constructor(public lat: number, public lng: number) {} }
-  }
+    Size: class {
+      constructor(
+        public width: number,
+        public height: number,
+      ) {}
+    },
+    Point: class {
+      constructor(
+        public x: number,
+        public y: number,
+      ) {}
+    },
+    LatLng: class {
+      constructor(
+        public lat: number,
+        public lng: number,
+      ) {}
+    },
+  },
 };
 
 // Mock Canvas
@@ -34,7 +49,7 @@ class MockCanvas {
       stroke: jest.fn(),
       save: jest.fn(),
       restore: jest.fn(),
-      isPointInPath: jest.fn(() => false)
+      isPointInPath: jest.fn(() => false),
     };
   }
 }
@@ -62,16 +77,16 @@ describe('MVTFeature Performance Tests', () => {
       getStyleForFeature: jest.fn(() => ({
         fillStyle: 'rgba(255, 0, 0, 0.5)',
         strokeStyle: '#000000',
-        lineWidth: 2
+        lineWidth: 2,
       })),
-      isFeatureReplaced: jest.fn(() => false)
+      isFeatureReplaced: jest.fn(() => false),
     };
 
     mockTileContext = {
       id: 'tile_10_0_0',
       canvas: new MockCanvas(),
       zoom: 10,
-      tileSize: 256
+      tileSize: 256,
     };
 
     mockVectorTileFeature = {
@@ -84,16 +99,16 @@ describe('MVTFeature Performance Tests', () => {
           { x: 100, y: 0 },
           { x: 100, y: 100 },
           { x: 0, y: 100 },
-          { x: 0, y: 0 }
-        ]
-      ])
+          { x: 0, y: 0 },
+        ],
+      ]),
     };
   });
 
   describe('Feature Creation Performance', () => {
     test('should create feature quickly', () => {
       const start = performance.now();
-      
+
       const feature = new MVTFeature({
         mVTSource: mockMVTSource,
         vectorTileFeature: mockVectorTileFeature,
@@ -101,12 +116,12 @@ describe('MVTFeature Performance Tests', () => {
         style: { fillStyle: 'red' },
         selected: false,
         featureId: 'test_feature',
-        customDraw: false
+        customDraw: false,
       });
-      
+
       const duration = performance.now() - start;
       console.log(`🏗️ Feature Creation: ${duration.toFixed(2)}ms`);
-      
+
       expect(duration).toBeLessThan(5); // Feature creation under 5ms
       feature.dispose();
     });
@@ -114,33 +129,33 @@ describe('MVTFeature Performance Tests', () => {
     test('should create multiple features efficiently', () => {
       const featureCount = 100;
       const features: MVTFeature[] = [];
-      
+
       const start = performance.now();
-      
+
       for (let i = 0; i < featureCount; i++) {
         const feature = new MVTFeature({
           mVTSource: mockMVTSource,
           vectorTileFeature: {
             ...mockVectorTileFeature,
-            properties: { id: `feature_${i}` }
+            properties: { id: `feature_${i}` },
           },
           tileContext: mockTileContext,
           style: { fillStyle: 'red' },
           selected: false,
           featureId: `feature_${i}`,
-          customDraw: false
+          customDraw: false,
         });
         features.push(feature);
       }
-      
+
       const duration = performance.now() - start;
       const avgTime = duration / featureCount;
-      
+
       console.log(`🏗️ ${featureCount} Features Creation: ${duration.toFixed(2)}ms (avg: ${avgTime.toFixed(4)}ms)`);
       expect(avgTime).toBeLessThan(0.5); // Average creation under 0.5ms
-      
+
       // Cleanup
-      features.forEach(f => f.dispose());
+      features.forEach((f) => f.dispose());
     });
   });
 
@@ -155,7 +170,7 @@ describe('MVTFeature Performance Tests', () => {
         style: { fillStyle: 'red', strokeStyle: 'black', lineWidth: 2 },
         selected: false,
         featureId: 'test_feature',
-        customDraw: false
+        customDraw: false,
       });
     });
 
@@ -167,7 +182,7 @@ describe('MVTFeature Performance Tests', () => {
       const start = performance.now();
       feature.draw(mockTileContext);
       const duration = performance.now() - start;
-      
+
       console.log(`🎨 Polygon Draw: ${duration.toFixed(2)}ms`);
       expect(duration).toBeLessThan(10); // Polygon drawing under 10ms
     });
@@ -179,22 +194,22 @@ describe('MVTFeature Performance Tests', () => {
         vectorTileFeature: {
           ...mockVectorTileFeature,
           type: GeometryType.Point,
-          loadGeometry: jest.fn(() => [[{ x: 50, y: 50 }]])
+          loadGeometry: jest.fn(() => [[{ x: 50, y: 50 }]]),
         },
         tileContext: mockTileContext,
         style: { fillStyle: 'red', radius: 5 },
         selected: false,
         featureId: 'point_feature',
-        customDraw: false
+        customDraw: false,
       });
-      
+
       const start = performance.now();
       pointFeature.draw(mockTileContext);
       const duration = performance.now() - start;
-      
+
       console.log(`🎨 Point Draw: ${duration.toFixed(2)}ms`);
       expect(duration).toBeLessThan(5); // Point drawing under 5ms
-      
+
       pointFeature.dispose();
     });
 
@@ -209,31 +224,30 @@ describe('MVTFeature Performance Tests', () => {
             [
               { x: 0, y: 0 },
               { x: 50, y: 50 },
-              { x: 100, y: 100 }
-            ]
-          ])
+              { x: 100, y: 100 },
+            ],
+          ]),
         },
         tileContext: mockTileContext,
         style: { strokeStyle: 'blue', lineWidth: 3 },
         selected: false,
         featureId: 'line_feature',
-        customDraw: false
+        customDraw: false,
       });
-      
+
       const start = performance.now();
       lineFeature.draw(mockTileContext);
       const duration = performance.now() - start;
-      
+
       console.log(`🎨 LineString Draw: ${duration.toFixed(2)}ms`);
       expect(duration).toBeLessThan(8); // LineString drawing under 8ms
-      
+
       lineFeature.dispose();
     });
   });
 
   describe('Multi-tile Feature Performance', () => {
     let feature: MVTFeature;
-    let additionalTileContext: any;
 
     beforeEach(() => {
       feature = new MVTFeature({
@@ -243,15 +257,8 @@ describe('MVTFeature Performance Tests', () => {
         style: { fillStyle: 'red', strokeStyle: 'black', lineWidth: 2 },
         selected: false,
         featureId: 'multi_tile_feature',
-        customDraw: false
+        customDraw: false,
       });
-
-      additionalTileContext = {
-        id: 'tile_10_1_0',
-        canvas: new MockCanvas(),
-        zoom: 10,
-        tileSize: 256
-      };
     });
 
     afterEach(() => {
@@ -261,18 +268,18 @@ describe('MVTFeature Performance Tests', () => {
     test('should handle multi-tile features efficiently', () => {
       // Add feature to multiple tiles
       const start = performance.now();
-      
+
       for (let i = 0; i < 5; i++) {
         const tileContext = {
           id: `tile_10_${i}_0`,
           canvas: new MockCanvas(),
           zoom: 10,
-          tileSize: 256
+          tileSize: 256,
         };
-        
+
         feature.addTileFeature(mockVectorTileFeature, tileContext);
       }
-      
+
       const duration = performance.now() - start;
       console.log(`🔗 Multi-tile Setup (5 tiles): ${duration.toFixed(2)}ms`);
       expect(duration).toBeLessThan(20); // Multi-tile setup under 20ms
@@ -285,15 +292,15 @@ describe('MVTFeature Performance Tests', () => {
           id: `tile_10_${i}_0`,
           canvas: new MockCanvas(),
           zoom: 10,
-          tileSize: 256
+          tileSize: 256,
         };
         feature.addTileFeature(mockVectorTileFeature, tileContext);
       }
-      
+
       const start = performance.now();
       feature.draw(mockTileContext);
       const duration = performance.now() - start;
-      
+
       console.log(`🎨 Unified Multi-tile Draw: ${duration.toFixed(2)}ms`);
       expect(duration).toBeLessThan(25); // Unified drawing under 25ms
     });
@@ -310,7 +317,7 @@ describe('MVTFeature Performance Tests', () => {
         style: { fillStyle: 'red', strokeStyle: 'black', lineWidth: 2 },
         selected: false,
         featureId: 'cached_feature',
-        customDraw: false
+        customDraw: false,
       });
     });
 
@@ -323,16 +330,16 @@ describe('MVTFeature Performance Tests', () => {
       const start1 = performance.now();
       feature.draw(mockTileContext);
       const duration1 = performance.now() - start1;
-      
+
       // Second draw (warm cache)
       const start2 = performance.now();
       feature.draw(mockTileContext);
       const duration2 = performance.now() - start2;
-      
+
       console.log(`🗄️ First Draw (cold): ${duration1.toFixed(2)}ms`);
       console.log(`🗄️ Second Draw (warm): ${duration2.toFixed(2)}ms`);
       console.log(`🗄️ Cache Speedup: ${(duration1 / duration2).toFixed(1)}x`);
-      
+
       expect(duration2).toBeLessThanOrEqual(duration1); // Cache should help or be same
     });
 
@@ -340,14 +347,14 @@ describe('MVTFeature Performance Tests', () => {
       // Get paths multiple times
       const iterations = 10;
       const start = performance.now();
-      
+
       for (let i = 0; i < iterations; i++) {
         feature.getPaths(mockTileContext);
       }
-      
+
       const duration = performance.now() - start;
       const avgTime = duration / iterations;
-      
+
       console.log(`🗄️ ${iterations} Path Requests: ${duration.toFixed(2)}ms (avg: ${avgTime.toFixed(4)}ms)`);
       expect(avgTime).toBeLessThan(1); // Average path request under 1ms
     });
@@ -364,7 +371,7 @@ describe('MVTFeature Performance Tests', () => {
         style: { fillStyle: 'red' },
         selected: false,
         featureId: 'styled_feature',
-        customDraw: false
+        customDraw: false,
       });
     });
 
@@ -376,13 +383,13 @@ describe('MVTFeature Performance Tests', () => {
       const newStyle = {
         fillStyle: 'blue',
         strokeStyle: 'green',
-        lineWidth: 3
+        lineWidth: 3,
       };
-      
+
       const start = performance.now();
       feature.setStyle(newStyle);
       const duration = performance.now() - start;
-      
+
       console.log(`🎨 Style Change: ${duration.toFixed(4)}ms`);
       expect(duration).toBeLessThan(1); // Style change under 1ms
     });
@@ -393,18 +400,18 @@ describe('MVTFeature Performance Tests', () => {
         { fillStyle: 'blue' },
         { fillStyle: 'green' },
         { fillStyle: 'yellow' },
-        { fillStyle: 'purple' }
+        { fillStyle: 'purple' },
       ];
-      
+
       const start = performance.now();
-      
-      styles.forEach(style => {
+
+      styles.forEach((style) => {
         feature.setStyle(style);
       });
-      
+
       const duration = performance.now() - start;
       const avgTime = duration / styles.length;
-      
+
       console.log(`🎨 ${styles.length} Style Changes: ${duration.toFixed(2)}ms (avg: ${avgTime.toFixed(4)}ms)`);
       expect(avgTime).toBeLessThan(0.5); // Average style change under 0.5ms
     });
@@ -421,7 +428,7 @@ describe('MVTFeature Performance Tests', () => {
         style: { fillStyle: 'red' },
         selected: false,
         featureId: 'selectable_feature',
-        customDraw: false
+        customDraw: false,
       });
     });
 
@@ -431,15 +438,15 @@ describe('MVTFeature Performance Tests', () => {
 
     test('should toggle selection quickly', () => {
       const start = performance.now();
-      
+
       // Toggle selection multiple times
       for (let i = 0; i < 10; i++) {
         feature.setSelected(!feature.selected);
       }
-      
+
       const duration = performance.now() - start;
       const avgTime = duration / 10;
-      
+
       console.log(`⚡ 10 Selection Toggles: ${duration.toFixed(2)}ms (avg: ${avgTime.toFixed(4)}ms)`);
       expect(avgTime).toBeLessThan(0.1); // Average toggle under 0.1ms
     });
@@ -448,7 +455,7 @@ describe('MVTFeature Performance Tests', () => {
   describe('Memory Management Performance', () => {
     test('should dispose features quickly', () => {
       const features: MVTFeature[] = [];
-      
+
       // Create multiple features
       for (let i = 0; i < 50; i++) {
         const feature = new MVTFeature({
@@ -458,20 +465,20 @@ describe('MVTFeature Performance Tests', () => {
           style: { fillStyle: 'red' },
           selected: false,
           featureId: `disposable_feature_${i}`,
-          customDraw: false
+          customDraw: false,
         });
         features.push(feature);
       }
-      
+
       const start = performance.now();
-      
-      features.forEach(feature => {
+
+      features.forEach((feature) => {
         feature.dispose();
       });
-      
+
       const duration = performance.now() - start;
       const avgTime = duration / features.length;
-      
+
       console.log(`🗑️ ${features.length} Feature Disposals: ${duration.toFixed(2)}ms (avg: ${avgTime.toFixed(4)}ms)`);
       expect(avgTime).toBeLessThan(0.5); // Average disposal under 0.5ms
     });

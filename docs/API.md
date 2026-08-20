@@ -5,6 +5,7 @@
 Main controller class for rendering vector tiles.
 
 ### Constructor
+
 ```typescript
 new MVTSource(map: google.maps.Map, options: MVTSourceOptions)
 ```
@@ -12,6 +13,7 @@ new MVTSource(map: google.maps.Map, options: MVTSourceOptions)
 ### Essential Methods
 
 #### Feature Selection
+
 ```typescript
 // Set selected features
 mvtSource.setSelectedFeatures(['feature1', 'feature2']);
@@ -41,6 +43,7 @@ mvtSource.clearAllHoveredFeatures();
 ```
 
 #### Layer Management
+
 ```typescript
 // Set visible layers
 mvtSource.setVisibleLayers(['boundaries', 'roads']);
@@ -51,11 +54,12 @@ const layers = mvtSource.getVisibleLayers();
 ```
 
 #### Styling & Filtering
+
 ```typescript
 // Update style
 mvtSource.setStyle({
   fillStyle: 'red',
-  selected: { fillStyle: 'orange' }
+  selected: { fillStyle: 'orange' },
 });
 
 // Set filter
@@ -64,6 +68,7 @@ mvtSource.setFilter(false); // Remove filter
 ```
 
 #### Rendering & Performance
+
 ```typescript
 // Force redraw
 mvtSource.redrawAllTiles();
@@ -82,6 +87,7 @@ mvtSource.dispose(); // Always call when done
 ```
 
 #### Tile Availability
+
 ```typescript
 // Set tile availability manifest
 await mvtSource.setTileAvailabilityManifest(manifest);
@@ -94,59 +100,64 @@ await mvtSource.refreshManifest();
 ## MVTSourceOptions
 
 ### Required
-| Option | Type | Description |
-|--------|------|-------------|
-| `url` | `string` | Tile URL template: `https://api.com/{z}/{x}/{y}.pbf` |
+
+| Option | Type     | Description                                          |
+| ------ | -------- | ---------------------------------------------------- |
+| `url`  | `string` | Tile URL template: `https://api.com/{z}/{x}/{y}.pbf` |
 
 ### Common Options
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `style` | `FeatureStyle \| Function` | `defaultStyle()` | Feature styling |
-| `visibleLayers` | `string[]` | `undefined` | Visible layers (undefined = all) |
-| `cache` | `boolean` | `false` | Enable tile caching |
-| `debug` | `boolean` | `false` | Enable debug logging |
-| `tileSize` | `number` | `256` | Tile size in pixels |
-| `sourceMaxZoom` | `number \| false` | `false` | Max zoom for requests |
+
+| Option          | Type                       | Default          | Description                      |
+| --------------- | -------------------------- | ---------------- | -------------------------------- |
+| `style`         | `FeatureStyle \| Function` | `defaultStyle()` | Feature styling                  |
+| `visibleLayers` | `string[]`                 | `undefined`      | Visible layers (undefined = all) |
+| `cache`         | `boolean`                  | `false`          | Enable tile caching              |
+| `debug`         | `boolean`                  | `false`          | Enable debug logging             |
+| `tileSize`      | `number`                   | `256`            | Tile size in pixels              |
+| `sourceMaxZoom` | `number \| false`          | `false`          | Max zoom for requests            |
 
 ### Selection Options
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `selectedFeatures` | `(string \| number)[]` | `[]` | Initially selected |
-| `multipleSelection` | `boolean` | `false` | Allow multiple selection |
-| `setSelectedOnClick` | `boolean` | `true` | Auto-select on click |
-| `toggleSelection` | `boolean` | `true` | Toggle on repeat clicks |
-| `limitToFirstVisibleLayer` | `boolean` | `false` | Stop at first clicked layer |
-| `hoverDelay` | `number` | `0` | Hover event delay (ms) |
+
+| Option                     | Type                   | Default | Description                 |
+| -------------------------- | ---------------------- | ------- | --------------------------- |
+| `selectedFeatures`         | `(string \| number)[]` | `[]`    | Initially selected          |
+| `multipleSelection`        | `boolean`              | `false` | Allow multiple selection    |
+| `setSelectedOnClick`       | `boolean`              | `true`  | Auto-select on click        |
+| `toggleSelection`          | `boolean`              | `true`  | Toggle on repeat clicks     |
+| `limitToFirstVisibleLayer` | `boolean`              | `false` | Stop at first clicked layer |
+| `hoverDelay`               | `number`               | `0`     | Hover event delay (ms)      |
 
 ### Event Handlers
-| Option | Type | Description |
-|--------|------|-------------|
-| `onClick` | `(event: MVTMouseEvent) => void` | Click handler |
-| `onMouseHover` | `(event: MVTMouseEvent) => void` | Hover handler |
-| `featureSelectionCallback` | `(id, data, selected) => void` | Selection callback |
+
+| Option                     | Type                             | Description        |
+| -------------------------- | -------------------------------- | ------------------ |
+| `onClick`                  | `(event: MVTMouseEvent) => void` | Click handler      |
+| `onMouseHover`             | `(event: MVTMouseEvent) => void` | Hover handler      |
+| `featureSelectionCallback` | `(id, data, selected) => void`   | Selection callback |
 
 ### Advanced Options
-| Option | Type | Description |
-|--------|------|-------------|
-| `filter` | `(feature, context) => boolean` | Feature filter |
-| `getIDForLayerFeature` | `(feature) => string \| number` | ID extraction |
-| `defaultFeatureId` | `string` | Default property name for IDs |
-| `tileAvailabilityManifest` | `object \| function` | Tile availability data |
-| `xhrHeaders` | `Record<string, string>` | Custom request headers |
-| `clickableLayers` | `string[] \| false` | Layers that respond to clicks |
-| `customDraw` | `function` | Custom drawing function |
-| `getReplacementFeature` | `function` | High-detail GeoJSON provider |
+
+| Option                     | Type                            | Description                   |
+| -------------------------- | ------------------------------- | ----------------------------- |
+| `filter`                   | `(feature, context) => boolean` | Feature filter                |
+| `getIDForLayerFeature`     | `(feature) => string \| number` | ID extraction                 |
+| `defaultFeatureId`         | `string`                        | Default property name for IDs |
+| `tileAvailabilityManifest` | `object \| function`            | Tile availability data        |
+| `xhrHeaders`               | `Record<string, string>`        | Custom request headers        |
+| `clickableLayers`          | `string[] \| false`             | Layers that respond to clicks |
+| `customDraw`               | `function`                      | Custom drawing function       |
+| `getReplacementFeature`    | `function`                      | High-detail GeoJSON provider  |
 
 ## FeatureStyle
 
 ```typescript
 interface FeatureStyle {
-  fillStyle?: string;        // Fill color
-  strokeStyle?: string;      // Border color  
-  lineWidth?: number;        // Border width
-  fillOpacity?: number;      // Fill opacity (0-1)
-  radius?: number;           // Point radius
-  
+  fillStyle?: string; // Fill color
+  strokeStyle?: string; // Border color
+  lineWidth?: number; // Border width
+  fillOpacity?: number; // Fill opacity (0-1)
+  radius?: number; // Point radius
+
   // State styles
   selected?: Partial<FeatureStyle>;
   hover?: Partial<FeatureStyle>;
@@ -154,6 +165,7 @@ interface FeatureStyle {
 ```
 
 ### Examples
+
 ```typescript
 // Static style
 const style = {
@@ -162,15 +174,13 @@ const style = {
   lineWidth: 2,
   selected: {
     fillStyle: 'rgba(255, 140, 0, 0.8)',
-    lineWidth: 3
-  }
+    lineWidth: 3,
+  },
 };
 
 // Style function
 const styleFunction = (feature) => {
-  return feature.properties.important 
-    ? { fillStyle: 'red' }
-    : { fillStyle: 'blue' };
+  return feature.properties.important ? { fillStyle: 'red' } : { fillStyle: 'blue' };
 };
 ```
 
@@ -180,37 +190,39 @@ Event object for click/hover handlers.
 
 ```typescript
 interface MVTMouseEvent {
-  latLng: google.maps.LatLng;     // Geographic coordinates
-  pixel: google.maps.Point;       // Screen coordinates
-  feature?: MVTFeature;           // Clicked feature (undefined if none)
-  tileContext?: TileContext;      // Tile information
-  tilePoint?: Point;              // Coordinates relative to tile
+  latLng: google.maps.LatLng; // Geographic coordinates
+  pixel: google.maps.Point; // Screen coordinates
+  feature?: MVTFeature; // Clicked feature (undefined if none)
+  tileContext?: TileContext; // Tile information
+  tilePoint?: Point; // Coordinates relative to tile
 }
 ```
 
 ### Usage
+
 ```typescript
 const mvtSource = new MVTSource(map, {
   url: 'https://tiles.com/{z}/{x}/{y}.pbf',
   onClick: (event) => {
     console.log('Coordinates:', event.latLng.toString());
-    
+
     if (event.feature) {
       console.log('Feature ID:', event.feature.featureId);
       console.log('Properties:', event.feature.properties);
       console.log('Selected:', event.feature.selected);
     }
-    
+
     if (event.tileContext) {
       console.log('Tile:', event.tileContext.id);
     }
-  }
+  },
 });
 ```
 
 ## Utilities
 
 ### ColorUtils
+
 ```typescript
 import { ColorUtils } from 'google-maps-vector-engine';
 
@@ -229,6 +241,7 @@ const rgba = ColorUtils.parseRgb('rgba(255, 0, 0, 0.5)');
 ```
 
 ### MVTUtils
+
 ```typescript
 import { MVTUtils } from 'google-maps-vector-engine';
 
@@ -238,8 +251,8 @@ const id = MVTUtils.extractFeatureId(feature, 'custom_id');
 // Filter creation
 const filter = MVTUtils.createPropertyFilter('category', ['A', 'B']);
 const styleFunc = MVTUtils.createPropertyBasedStyle('type', {
-  'residential': { fillStyle: 'yellow' },
-  'commercial': { fillStyle: 'blue' }
+  residential: { fillStyle: 'yellow' },
+  commercial: { fillStyle: 'blue' },
 });
 
 // Performance monitoring
@@ -248,6 +261,7 @@ const time = MVTUtils.performance.measureSelectionTime(mvtSource, ['f1']);
 ```
 
 ### Mercator
+
 ```typescript
 import { Mercator } from 'google-maps-vector-engine';
 
@@ -266,31 +280,25 @@ const distance = Mercator.getDistanceFromLine(point, linePoints);
 ## Factory Functions
 
 ### MVTFactory
+
 ```typescript
 import { MVTFactory } from 'google-maps-vector-engine';
 
 // Administrative boundaries
-const config = MVTFactory.createAdministrativeConfig(
-  'https://api.example.com',
-  'communes',
-  { setSelectedOnClick: true }
-);
+const config = MVTFactory.createAdministrativeConfig('https://api.example.com', 'communes', {
+  setSelectedOnClick: true,
+});
 
 // High performance
-const perfConfig = MVTFactory.createHighPerformanceConfig(
-  'https://tiles.com/{z}/{x}/{y}.pbf'
-);
+const perfConfig = MVTFactory.createHighPerformanceConfig('https://tiles.com/{z}/{x}/{y}.pbf');
 ```
 
 ### createMVTSource
+
 ```typescript
 import { createMVTSource } from 'google-maps-vector-engine';
 
-const mvtSource = createMVTSource(
-  map, 
-  'https://tiles.com/{z}/{x}/{y}.pbf',
-  { style: DefaultStyles.highContrast() }
-);
+const mvtSource = createMVTSource(map, 'https://tiles.com/{z}/{x}/{y}.pbf', { style: DefaultStyles.highContrast() });
 ```
 
 ## DefaultStyles
@@ -299,14 +307,14 @@ const mvtSource = createMVTSource(
 import { DefaultStyles } from 'google-maps-vector-engine';
 
 // Pre-built styles
-DefaultStyles.basic()        // Neutral gray
-DefaultStyles.minimal()      // Subtle appearance
-DefaultStyles.highContrast() // High visibility
+DefaultStyles.basic(); // Neutral gray
+DefaultStyles.minimal(); // Subtle appearance
+DefaultStyles.highContrast(); // High visibility
 
 // Selection styles
-DefaultStyles.selected.polygon()
-DefaultStyles.selected.point()  
-DefaultStyles.selected.line()
+DefaultStyles.selected.polygon();
+DefaultStyles.selected.point();
+DefaultStyles.selected.line();
 ```
 
 ## Error Handling
@@ -315,7 +323,7 @@ DefaultStyles.selected.line()
 try {
   const mvtSource = new MVTSource(map, {
     url: 'https://tiles.com/{z}/{x}/{y}.pbf',
-    debug: true // Shows detailed errors
+    debug: true, // Shows detailed errors
   });
 } catch (error) {
   console.error('MVTSource failed:', error);
@@ -323,6 +331,7 @@ try {
 ```
 
 The library handles gracefully:
+
 - Network errors (failed tile requests)
 - Invalid PBF data
 - Missing features
