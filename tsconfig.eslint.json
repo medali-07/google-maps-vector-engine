@@ -6,6 +6,6 @@
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["index.ts", "src/**/*", "tests/**/*", "scripts/**/*", "*.js", "*.mjs"],
+  "include": ["index.ts", "src/**/*", "tests/**/*", "scripts/**/*", "*.ts", "*.js", "*.mjs"],
   "exclude": ["node_modules", "dist", "coverage"]
 }

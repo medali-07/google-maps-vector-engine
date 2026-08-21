@@ -17,6 +17,15 @@ Google Maps doesn't natively support vector tiles (PBF format) - only raster til
 npm install google-maps-vector-engine
 ```
 
+Or drop it straight into a page — no build step, no bundler:
+
+```html
+<script src="https://unpkg.com/google-maps-vector-engine"></script>
+<script>
+  const { MVTSource, DefaultStyles } = GoogleMapsVectorEngine;
+</script>
+```
+
 ```typescript
 import { MVTSource, DefaultStyles } from 'google-maps-vector-engine';
 
@@ -154,6 +163,20 @@ See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for 
 - Google Maps API key
 - Modern browser with ES6+ support
 
+## 📦 Package
+
+Ships CommonJS, ESM and a self-contained browser bundle, with types for each:
+
+| Entry                                   | Condition          | Notes                        |
+| --------------------------------------- | ------------------ | ---------------------------- |
+| `dist/index.js`                         | `require()`        | Dependencies stay external   |
+| `dist/index.mjs`                        | `import`           | Dependencies stay external   |
+| `dist/google-maps-vector-engine.min.js` | `<script>` / unpkg | Everything inlined, minified |
+
+The GeoJSON merge subsystem — the only thing that pulls in Turf — is loaded on
+first use, so it stays out of the entry chunk unless you actually merge
+features across tiles.
+
 ## 🔧 Technical Notes
 
 - Uses standard **XYZ tile scheme**: `{z}/{x}/{y}.pbf`
@@ -162,7 +185,9 @@ See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for 
 
 ## 🤝 Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and guidelines.
+See [CONTRIBUTING.md](https://github.com/medali-07/google-maps-vector-engine/blob/main/CONTRIBUTING.md)
+for development setup and guidelines. That file is intentionally not published
+to npm, so this link is absolute rather than relative.
 
 ## 📄 License
 

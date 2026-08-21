@@ -11,12 +11,10 @@ jest.mock('@mapbox/vector-tile', () => ({
 
 jest.mock('pbf', () => jest.fn());
 
-jest.mock('@turf/turf', () => ({
-  polygon: jest.fn(),
-  buffer: jest.fn(),
-  intersect: jest.fn(),
-  union: jest.fn(),
-}));
+// @turf/turf was replaced by the granular @turf/union and @turf/intersect
+// packages; both are ESM-only default exports.
+jest.mock('@turf/union', () => ({ __esModule: true, default: jest.fn() }));
+jest.mock('@turf/intersect', () => ({ __esModule: true, default: jest.fn() }));
 
 // Mock the source files to avoid ES module issues
 jest.mock('../../src/MVTSource', () => {

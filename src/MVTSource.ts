@@ -5,7 +5,7 @@ import { MVTFeature } from './MVTFeature';
 import { Mercator } from './Mercator';
 import { ColorUtils } from './ColorUtils';
 import { createLogger, debugLogger } from './DebugLogger';
-import { GeometryMerger } from './geojson/GeometryMerger';
+import type { GeometryMerger } from './geojson/GeometryMerger';
 import { StyleResolver, DEFAULT_COLORS } from './style/StyleResolver';
 import { TileLoader } from './tiles/TileLoader';
 import { RedrawScheduler } from './render/RedrawScheduler';
@@ -64,7 +64,16 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
   public radius: number = 6378137;
 
   private logger = createLogger('MVTSource');
-  private _geometryMerger = new GeometryMerger();
+  /**
+   * The GeoJSON merge subsystem, loaded on first use.
+   *
+   * It is the only thing in the library that pulls in Turf, and it only runs
+   * when a selected feature spans several tiles and no `getReplacementFeature`
+   * was supplied. Importing it eagerly put that whole dependency in front of
+   * every consumer, including the ones who never touch GeoJSON overlays.
+   */
+  private _geometryMerger: GeometryMerger | null = null;
+  private _geometryMergerLoad: Promise<GeometryMerger> | null = null;
 
   // Core configuration
   private _url: string;
@@ -137,7 +146,10 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
 
   /** Withdraws this source's debug request on dispose. */
   private _releaseDebug: (() => void) | null = null;
-  private _fadeInDuration = MVTSource.DEFAULT_FADE_IN_MS;
+  // Declared without an initializer: referencing the static here reads it
+  // before its declaration further down the class body, which the declaration
+  // build rejects with TS2729. The constructor always assigns it anyway.
+  private _fadeInDuration: number;
 
   /** Cursor the map had before we overrode it, restored when hover ends. */
   private _cursorOverridden = false;
@@ -2097,7 +2109,19 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
   /**
    * Merge all features with the same ID from PBF data into a single GeoJSON feature
    */
-  private _mergeFeaturesByIdFromPBF(featureId: string | number): GeoJSONFeature<TProps> | null {
+  /** Load the merge subsystem once, and reuse it thereafter. */
+  private async _getGeometryMerger(): Promise<GeometryMerger> {
+    if (this._geometryMerger) return this._geometryMerger;
+
+    this._geometryMergerLoad ??= import('./geojson/GeometryMerger').then((module) => {
+      this._geometryMerger = new module.GeometryMerger();
+      return this._geometryMerger;
+    });
+
+    return this._geometryMergerLoad;
+  }
+
+  private async _mergeFeaturesByIdFromPBF(featureId: string | number): Promise<GeoJSONFeature<TProps> | null> {
     const feature = this._featureIndex.get(featureId);
     if (!feature) return null;
 
@@ -2106,6 +2130,8 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     let properties: Record<string, any> = {};
 
     this.logger.log(`Merging feature ${featureId} from ${Object.keys(tiles).length} tiles`);
+
+    const merger = await this._getGeometryMerger();
 
     // Collect all coordinate rings from all tiles containing this feature
     for (const [tileId, tileData] of Object.entries(tiles)) {
@@ -2126,7 +2152,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
           // them from the child put every overlay for an overzoomed feature at
           // the wrong place on the map.
           const sourceTileId = tileContext.parentId || tileContext.id;
-          const convertedCoords = this._geometryMerger.convertPBFCoordinatesToGeoJSON(
+          const convertedCoords = merger.convertPBFCoordinatesToGeoJSON(
             coordinates,
             this.getTileObject(sourceTileId),
             tileContext.tileSize,
@@ -2157,7 +2183,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     );
 
     // Merge connecting rings into optimal polygon/multipolygon structure
-    const mergedGeometry = this._geometryMerger.mergeConnectingRings(allCoordinateRings);
+    const mergedGeometry = merger.mergeConnectingRings(allCoordinateRings);
 
     return {
       type: 'Feature',
@@ -2226,7 +2252,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
                   featureData = replacementResult;
                 } else {
                   // Fallback to merging features by ID from PBF
-                  const mergedFeature = this._mergeFeaturesByIdFromPBF(featureId);
+                  const mergedFeature = await this._mergeFeaturesByIdFromPBF(featureId);
                   if (mergedFeature) {
                     featureData = mergedFeature;
                   }
@@ -2244,7 +2270,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
             }
           }
         } else {
-          const mergedFeature = this._mergeFeaturesByIdFromPBF(featureId);
+          const mergedFeature = await this._mergeFeaturesByIdFromPBF(featureId);
           if (mergedFeature) {
             featureData = mergedFeature;
           }

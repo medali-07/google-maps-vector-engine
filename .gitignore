@@ -51,3 +51,6 @@ full-performance-report.md
 # Temporary folders
 tmp/
 temp/
+
+# Tarballs produced by `npm pack`, including the CI smoke test.
+*.tgz
