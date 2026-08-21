@@ -29,6 +29,7 @@ export type {
   // Style types
   FeatureStyle,
   FeatureStyleFunction,
+  StyleContext,
 
   // Event types
   MVTMouseEvent,
@@ -69,6 +70,23 @@ export function createMVTSource(
 }
 
 /**
+ * Colour-vision-safe palette, from Okabe and Ito's eight-colour set.
+ *
+ * Every pair in this set stays distinguishable under protanopia, deuteranopia
+ * and tritanopia, which the usual red/green map palettes do not.
+ */
+export const AccessiblePalette = {
+  ORANGE: '#E69F00',
+  SKY_BLUE: '#56B4E9',
+  BLUISH_GREEN: '#009E73',
+  YELLOW: '#F0E442',
+  BLUE: '#0072B2',
+  VERMILLION: '#D55E00',
+  REDDISH_PURPLE: '#CC79A7',
+  BLACK: '#000000',
+} as const;
+
+/**
  * Default style presets
  */
 export const DefaultStyles = {
@@ -99,6 +117,63 @@ export const DefaultStyles = {
     hover: {
       fillStyle: 'rgba(0, 150, 255, 0.7)',
       lineWidth: 2,
+    },
+  }),
+
+  /**
+   * Colour-vision-safe preset for light basemaps.
+   *
+   * Contrast against a typical light basemap (#F2F0EC): outline 4.56:1,
+   * selected outline 3.40:1. Both clear the 3:1 WCAG 2.2 threshold for
+   * non-text contrast.
+   *
+   * Selection is *not* signalled by hue alone. Blue and vermillion differ by
+   * only 1.34:1 in luminance, so they are near-identical in greyscale and to a
+   * monochromat; the 1.5px to 4px outline step is what carries the state.
+   */
+  accessible: (): import('./src/types').FeatureStyle => ({
+    fillStyle: 'rgba(0, 114, 178, 0.25)',
+    strokeStyle: AccessiblePalette.BLUE,
+    lineWidth: 1.5,
+    radius: 5,
+    selected: {
+      fillStyle: 'rgba(213, 94, 0, 0.45)',
+      strokeStyle: AccessiblePalette.VERMILLION,
+      lineWidth: 4,
+      radius: 7,
+    },
+    hover: {
+      fillStyle: 'rgba(0, 114, 178, 0.4)',
+      strokeStyle: AccessiblePalette.BLUE,
+      lineWidth: 2.5,
+    },
+  }),
+
+  /**
+   * Colour-vision-safe preset for dark basemaps.
+   *
+   * Contrast against a typical dark basemap (#242F3E): outline 5.87:1,
+   * selected outline 6.01:1.
+   *
+   * Sky blue and orange differ by only 1.02:1 in luminance - effectively
+   * indistinguishable in greyscale - so, as with `accessible`, the 1.5px to
+   * 4px outline step is what actually distinguishes a selected feature.
+   */
+  dark: (): import('./src/types').FeatureStyle => ({
+    fillStyle: 'rgba(86, 180, 233, 0.22)',
+    strokeStyle: AccessiblePalette.SKY_BLUE,
+    lineWidth: 1.5,
+    radius: 5,
+    selected: {
+      fillStyle: 'rgba(230, 159, 0, 0.45)',
+      strokeStyle: AccessiblePalette.ORANGE,
+      lineWidth: 4,
+      radius: 7,
+    },
+    hover: {
+      fillStyle: 'rgba(86, 180, 233, 0.38)',
+      strokeStyle: AccessiblePalette.SKY_BLUE,
+      lineWidth: 2.5,
     },
   }),
 

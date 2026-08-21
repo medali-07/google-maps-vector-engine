@@ -167,6 +167,8 @@ export function createMockCanvasContext(): CanvasRenderingContext2D {
     restore: jest.fn(),
     scale: jest.fn(),
     translate: jest.fn(),
+    setTransform: jest.fn(),
+    resetTransform: jest.fn(),
     isPointInPath: jest.fn().mockReturnValue(true),
     canvas: {
       width: 256,

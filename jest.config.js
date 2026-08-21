@@ -27,14 +27,14 @@ module.exports = {
 
   // Ratchet, not an aspiration. These are pinned just under the measured
   // baseline so coverage cannot regress, and are raised as tests land.
-  // Phase 6 target is 85/85/80. Raised after the Phase 2 module split:
-  // statements 45.28, branches 34.47, functions 42.95, lines 45.66.
+  // Phase 6 target is 85/85/80. Raised after the Phase 3 rendering work:
+  // statements 56.11, branches 46.78, functions 53.14, lines 56.47.
   coverageThreshold: {
     global: {
-      branches: 34,
-      functions: 42,
-      lines: 45,
-      statements: 45,
+      branches: 46,
+      functions: 53,
+      lines: 56,
+      statements: 56,
     },
   },
 

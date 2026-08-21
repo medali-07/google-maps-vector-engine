@@ -26,7 +26,7 @@ describe('RedrawScheduler', () => {
     expect(flush.mock.calls[0][0].sort()).toEqual(['a', 'b']);
   });
 
-  test('does not flush before the debounce window elapses', () => {
+  test('does not flush before the frame lands', () => {
     const scheduler = new RedrawScheduler(flush, 16);
 
     scheduler.schedule('a');
@@ -37,7 +37,35 @@ describe('RedrawScheduler', () => {
     expect(flush).toHaveBeenCalledTimes(1);
   });
 
-  test('clears the queue after flushing, so a second window is a no-op', () => {
+  test('keeps flushing under continuous scheduling instead of starving', () => {
+    // This is why it is a throttle and not a debounce: the old version
+    // cancelled and re-armed its timer on every schedule, so a state change
+    // arriving every frame - a drag, or hover across dense geometry - pushed
+    // the repaint out indefinitely and the map stopped updating.
+    const scheduler = new RedrawScheduler(flush, 16);
+
+    for (let i = 0; i < 10; i++) {
+      scheduler.schedule(`tile-${i}`);
+      jest.advanceTimersByTime(16);
+    }
+
+    expect(flush.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  test('an already-armed frame is not pushed back by further scheduling', () => {
+    const scheduler = new RedrawScheduler(flush, 16);
+
+    scheduler.schedule('a');
+    jest.advanceTimersByTime(10);
+    scheduler.schedule('b');
+    jest.advanceTimersByTime(6);
+
+    // Both tiles land in the frame that was armed by the *first* schedule.
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(flush.mock.calls[0][0].sort()).toEqual(['a', 'b']);
+  });
+
+  test('clears the queue after flushing, so a second frame is a no-op', () => {
     const scheduler = new RedrawScheduler(flush, 16);
 
     scheduler.schedule('a');
@@ -80,7 +108,7 @@ describe('RedrawScheduler', () => {
     expect(flush).toHaveBeenCalledTimes(1);
   });
 
-  test('dispose cancels the timer and drops the queue', () => {
+  test('dispose cancels the pending frame and drops the queue', () => {
     const scheduler = new RedrawScheduler(flush, 16);
 
     scheduler.schedule('a');

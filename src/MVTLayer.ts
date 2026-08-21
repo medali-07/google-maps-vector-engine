@@ -20,6 +20,13 @@ import {
  * Handles feature parsing, rendering, and interaction logic for a single layer
  * with proper z-ordering and efficient click detection.
  */
+/** Per-pass hit-test accumulator. Kept out of the class so two overlapping
+ *  hit tests - hover and click - cannot read each other's partial state. */
+interface HitTestState {
+  feature: MVTFeature | null;
+  minDistance: number;
+}
+
 export class MVTLayer {
   public name: string;
   public style: FeatureStyle | FeatureStyleFunction;
@@ -30,8 +37,6 @@ export class MVTLayer {
   private _customDraw: ((tileContext: TileContext, tile: any, style: FeatureStyle, feature: any) => void) | false;
   private _canvasAndMVTFeatures: Record<string, CanvasAndFeatures> = {};
   private _mVTFeatures: Record<string | number, MVTFeature> = {};
-  private selectedFeature: MVTFeature | null = null;
-  private minDistance: number = Number.POSITIVE_INFINITY;
   private logger = createLogger('MVTLayer');
 
   constructor(options: MVTLayerOptions) {
@@ -226,31 +231,35 @@ export class MVTLayer {
     mVTFeatures: MVTFeature[],
     _mVTSource: any,
   ): MVTFeature | undefined {
-    this.selectedFeature = null;
-    this.minDistance = Number.POSITIVE_INFINITY;
+    // `hit` and `minDistance` used to be instance fields. Hover ran through a
+    // timer while click ran synchronously, so two hit tests could interleave
+    // and read each other's partial state - one returning the other's feature,
+    // or an exact hit being discarded because the other pass had already reset
+    // minDistance. They are locals now, so each pass is self-contained.
+    const hit: HitTestState = { feature: null, minDistance: Number.POSITIVE_INFINITY };
 
     const selectedFeatures = mVTFeatures.filter((f) => f.selected);
     if (selectedFeatures.length > 0) {
-      this._checkFeaturesForClick(event, selectedFeatures);
-      if (this.selectedFeature) {
-        return this.selectedFeature;
+      this._checkFeaturesForClick(event, selectedFeatures, hit);
+      if (hit.feature) {
+        return hit.feature;
       }
     }
 
-    this._checkFeaturesForClick(event, mVTFeatures);
-    return this.selectedFeature || undefined;
+    this._checkFeaturesForClick(event, mVTFeatures, hit);
+    return hit.feature || undefined;
   }
 
   /**
    * Check features for click collision detection
    */
-  private _checkFeaturesForClick(event: MVTMouseEvent, features: MVTFeature[]): void {
+  private _checkFeaturesForClick(event: MVTMouseEvent, features: MVTFeature[], hit: HitTestState): void {
     for (let i = features.length - 1; i >= 0; i--) {
       const feature = features[i];
 
-      if (this._isFeatureClicked(event, feature)) {
-        this.selectedFeature = feature;
-        if (this.minDistance === 0) {
+      if (this._isFeatureClicked(event, feature, hit)) {
+        hit.feature = feature;
+        if (hit.minDistance === 0) {
           return;
         }
       }
@@ -260,14 +269,14 @@ export class MVTLayer {
   /**
    * Check if specific feature is clicked
    */
-  private _isFeatureClicked(event: MVTMouseEvent, feature: MVTFeature): boolean {
+  private _isFeatureClicked(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
     switch (feature.type) {
       case GeometryType.Polygon:
-        return this._checkPolygonClick(event, feature);
+        return this._checkPolygonClick(event, feature, hit);
       case GeometryType.Point:
-        return this._checkPointClick(event, feature);
+        return this._checkPointClick(event, feature, hit);
       case GeometryType.LineString:
-        return this._checkLineClick(event, feature);
+        return this._checkLineClick(event, feature, hit);
       default:
         return false;
     }
@@ -276,9 +285,9 @@ export class MVTLayer {
   /**
    * Check polygon click using isPointInPath
    */
-  private _checkPolygonClick(event: MVTMouseEvent, feature: MVTFeature): boolean {
+  private _checkPolygonClick(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
     if (feature.isPointInPath(event.tilePoint!, event.tileContext!)) {
-      this.minDistance = 0;
+      hit.minDistance = 0;
       return true;
     }
     return false;
@@ -287,7 +296,7 @@ export class MVTLayer {
   /**
    * Check point click with radius
    */
-  private _checkPointClick(event: MVTMouseEvent, feature: MVTFeature): boolean {
+  private _checkPointClick(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
     const paths = feature.getPaths(event.tileContext!);
 
     for (const path of paths) {
@@ -296,7 +305,7 @@ export class MVTLayer {
         const radius = feature.style.radius || 3;
 
         if (Mercator.inCircle(point.x, point.y, radius, event.tilePoint!.x, event.tilePoint!.y)) {
-          this.minDistance = 0;
+          hit.minDistance = 0;
           return true;
         }
       }
@@ -307,7 +316,7 @@ export class MVTLayer {
   /**
    * Check line click with tolerance
    */
-  private _checkLineClick(event: MVTMouseEvent, feature: MVTFeature): boolean {
+  private _checkLineClick(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
     const paths = feature.getPaths(event.tileContext!);
 
     for (const path of paths) {
@@ -315,8 +324,8 @@ export class MVTLayer {
       const lineWidth = feature.style.lineWidth || 1;
       const tolerance = lineWidth / 2 + this._lineClickTolerance;
 
-      if (distance < tolerance && distance < this.minDistance) {
-        this.minDistance = distance;
+      if (distance < tolerance && distance < hit.minDistance) {
+        hit.minDistance = distance;
         return true;
       }
     }

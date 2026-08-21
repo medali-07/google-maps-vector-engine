@@ -1,5 +1,6 @@
 import { VectorTileFeature } from '@mapbox/vector-tile';
-import { FeatureStyle, FeatureStyleFunction, GeometryType } from '../types';
+import { ColorUtils } from '../ColorUtils';
+import { FeatureStyle, FeatureStyleFunction, GeometryType, StyleContext } from '../types';
 
 /** Default palette used when no style is supplied. */
 export const DEFAULT_COLORS = {
@@ -35,6 +36,12 @@ export interface FeatureStateLookup {
 export class StyleResolver {
   private static readonly MAX_CACHE_SIZE = 1000;
 
+  /** Fill alpha multiplier applied by the fallback hover treatment. */
+  static readonly HOVER_ALPHA_FACTOR = 1.5;
+
+  /** Extra outline width applied by the fallback hover treatment, in CSS px. */
+  static readonly HOVER_LINE_WIDTH_BOOST = 1;
+
   private _cache: Map<string, FeatureStyle> = new Map();
   private _cacheVersion = 0;
 
@@ -63,11 +70,14 @@ export class StyleResolver {
 
   /**
    * Style a feature should be drawn with, given its current state.
+   *
+   * @param context Zoom and tile the feature is being drawn for, passed
+   *                through to a style function so it can vary by zoom.
    */
-  resolve(feature: VectorTileFeature, featureId: string | number): FeatureStyle {
+  resolve(feature: VectorTileFeature, featureId: string | number, context?: StyleContext): FeatureStyle {
     const isSelected = this._state.isSelected(featureId);
     const isHovered = this._state.isHovered(featureId);
-    const baseStyle = typeof this.style === 'function' ? this.style(feature) : this.style;
+    const baseStyle = typeof this.style === 'function' ? this.style(feature, context) : this.style;
 
     // Fast path: static style with no state changes
     if (typeof this.style !== 'function' && !isSelected && !isHovered) {
@@ -76,9 +86,9 @@ export class StyleResolver {
 
     // Only worth caching under load, or when a user function is involved.
     const shouldUseCache = typeof this.style === 'function' || this._state.featureCount() > 100;
+    const cacheKey = shouldUseCache ? this._cacheKey(feature, featureId, isSelected, isHovered, context) : '';
 
     if (shouldUseCache) {
-      const cacheKey = this._cacheKey(feature, featureId, isSelected, isHovered);
       const cachedStyle = this._cache.get(cacheKey);
       if (cachedStyle) {
         return cachedStyle;
@@ -104,17 +114,12 @@ export class StyleResolver {
         ...(!resultStyle.lineWidth ? { lineWidth: computedSelectedStyle.lineWidth } : {}),
       };
     } else if (isHovered && !baseStyle.hover) {
-      if (resultStyle.fillStyle && !resultStyle.fillStyle.includes('rgba(')) {
-        const hoverFill = resultStyle.fillStyle.replace('0.3', '0.5').replace('0.4', '0.6');
-        if (hoverFill !== resultStyle.fillStyle) {
-          resultStyle.fillStyle = hoverFill;
-        }
-      }
+      resultStyle = { ...resultStyle, ...StyleResolver.hoverStyleFor(resultStyle) };
     }
 
     if (shouldUseCache) {
       this._evictIfFull();
-      this._cache.set(this._cacheKey(feature, featureId, isSelected, isHovered), resultStyle);
+      this._cache.set(cacheKey, resultStyle);
     }
 
     return resultStyle;
@@ -171,40 +176,75 @@ export class StyleResolver {
     }
   }
 
+  /**
+   * Fallback hover treatment for a feature whose style declares no `hover`.
+   *
+   * Lifts the fill's alpha and thickens the outline. The width change matters:
+   * signalling hover by colour alone disappears under monochromacy and under
+   * most colour-vision deficiencies, so the emphasis has to be carried by
+   * something other than hue as well.
+   *
+   * The previous implementation did a literal `"0.3"` to `"0.5"` string
+   * replacement on the colour, and only when the colour did *not* start with
+   * `rgba(` - which is every default this library ships, so it never once ran.
+   */
+  static hoverStyleFor(style: FeatureStyle): FeatureStyle {
+    const hover: FeatureStyle = {};
+
+    if (style.fillStyle) {
+      const lifted = ColorUtils.scaleAlpha(style.fillStyle, StyleResolver.HOVER_ALPHA_FACTOR);
+      if (lifted !== style.fillStyle) {
+        hover.fillStyle = lifted;
+      }
+    }
+
+    hover.lineWidth = (style.lineWidth ?? 1) + StyleResolver.HOVER_LINE_WIDTH_BOOST;
+
+    return hover;
+  }
+
   private _cacheKey(
     feature: VectorTileFeature,
     featureId: string | number,
     isSelected: boolean,
     isHovered: boolean,
+    context?: StyleContext,
   ): string {
     const state = (isSelected ? 'S' : '') + (isHovered ? 'H' : '');
-    return `${this._cacheVersion}:${featureId}:${StyleResolver._featureHash(feature)}:${state}`;
+    const zoom = context ? context.zoom : '';
+    return `${this._cacheVersion}:${zoom}:${featureId}:${StyleResolver._featureHash(feature)}:${state}`;
   }
 
-  // NOTE: hashes only a fixed property whitelist, so two features that differ
-  // solely in a property outside this list collide and share a style. Tracked
-  // in PLAN.md for Phase 3; kept as-is here to preserve Phase 2 behaviour.
+  /**
+   * Identity hash for a feature's properties, memoized per feature object.
+   *
+   * This used to hash a fixed ten-property whitelist, so any two features
+   * differing only outside that list produced the same key and were served
+   * each other's style. That bites whenever the id extractor maps several
+   * features to one id - including the default, where every feature without a
+   * `fid` property shares the fallback id.
+   *
+   * Hashing every property is correct but costs a sort and a walk, so the
+   * result is cached against the feature object itself. Decoded features are
+   * stable for the lifetime of a parsed tile, and a WeakMap keeps this from
+   * pinning them once the tile is released.
+   */
+  private static _hashCache = new WeakMap<object, string>();
+
   private static _featureHash(feature: VectorTileFeature): string {
+    const key = feature as unknown as object;
+    const cached = StyleResolver._hashCache.get(key);
+    if (cached !== undefined) return cached;
+
     const props = feature.properties || {};
-    const keyProps = [
-      'type',
-      'category',
-      'class',
-      'subtype',
-      'importance',
-      'level',
-      'land_use',
-      'population_density',
-      'area',
-      'length',
-    ];
+    const names = Object.keys(props).sort();
 
     let hash = `t${feature.type}`;
-    for (const prop of keyProps) {
-      if (props[prop] !== undefined) {
-        hash += `_${prop}:${props[prop]}`;
-      }
+    for (const name of names) {
+      hash += `|${name}=${String(props[name])}`;
     }
+
+    StyleResolver._hashCache.set(key, hash);
     return hash;
   }
 
