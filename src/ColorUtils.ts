@@ -55,6 +55,11 @@ export class ColorUtils {
   }
 
   private static _parseColorInternal(colorStr: string): { r: number; g: number; b: number; a?: number } | null {
+    // Every branch below works on the normalised string. They used to read the
+    // original, so a leading space or an uppercase `RGB(` fell through to null
+    // - and CSS colours are case-insensitive, so `fillStyle: 'RGB(1,2,3)'` is
+    // perfectly valid input that silently defeated fillOpacity and the hover
+    // fallback.
     const lowerColor = colorStr.toLowerCase().trim();
 
     const commonColor = this.COMMON_COLORS.get(lowerColor);
@@ -62,8 +67,8 @@ export class ColorUtils {
       return commonColor;
     }
 
-    if (colorStr.startsWith('#')) {
-      const hex = colorStr.slice(1);
+    if (lowerColor.startsWith('#')) {
+      const hex = lowerColor.slice(1);
       if (hex.length === 3) {
         return {
           r: parseInt(hex[0] + hex[0], 16),
@@ -79,7 +84,7 @@ export class ColorUtils {
       }
     }
 
-    const rgbMatch = colorStr.match(/rgba?\((.+)\)/);
+    const rgbMatch = lowerColor.match(/rgba?\((.+)\)/);
     if (rgbMatch) {
       const values = rgbMatch[1].split(',').map((v) => parseFloat(v.trim()));
       if (values.length >= 3) {

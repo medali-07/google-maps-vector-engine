@@ -189,7 +189,10 @@ export class GeometryMerger {
       this.logger.error('Error converting PBF coordinates to GeoJSON:', error, {
         tile: `${z}/${x}/${y}`,
         geometryType,
-        coordinatesLength: pbfCoordinates.length,
+        // Null-safe: this runs *because* the input was malformed, so reading
+        // .length unguarded made the error handler throw its own TypeError
+        // and the caller never got the null this method promises.
+        coordinatesLength: Array.isArray(pbfCoordinates) ? pbfCoordinates.length : 'n/a',
       });
     }
 

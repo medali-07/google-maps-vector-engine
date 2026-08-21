@@ -112,7 +112,9 @@ export default tseslint.config(
   },
 
   {
-    files: ['eslint.config.mjs'],
+    // .mjs is ES module by definition; the block above defaults .js/.mjs to
+    // commonjs because most config files here are CJS.
+    files: ['eslint.config.mjs', '**/*.mjs'],
     languageOptions: { sourceType: 'module' },
   },
 

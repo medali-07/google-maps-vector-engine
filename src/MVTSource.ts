@@ -188,6 +188,15 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
   /** Pending tileLoaded() poll timers, cancelled on dispose. */
   private _tileLoadedTimers: Set<ReturnType<typeof setTimeout>> = new Set();
 
+  /**
+   * Resolvers for tileLoaded() promises still waiting.
+   *
+   * dispose() cancels the poll timers, so the `_disposed` check inside the
+   * poll could never run in the one case it was written for: an in-flight
+   * tileLoaded() simply hung forever. They are settled explicitly instead.
+   */
+  private _tileLoadedResolvers: Set<(loaded: boolean) => void> = new Set();
+
   /** Deferred timers from _zoomChanged and setStyle, cancelled on dispose. */
   private _deferredTimers: Set<ReturnType<typeof setTimeout>> = new Set();
 
@@ -279,7 +288,13 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     this._sourceMaxZoom = options.sourceMaxZoom || false;
     this._debug = options.debug || false;
     this._defaultFeatureId = options.defaultFeatureId || 'fid';
-    this._getIDForLayerFeature = options.getIDForLayerFeature || this.defaultGetIDForLayerFeature;
+    // Bound: MVTLayer stores this and calls it as its own method, so an
+    // unbound reference arrives with `this` pointing at the layer, where
+    // neither _extractFeatureProperty nor _defaultFeatureId exists. It threw
+    // on the first feature of every tile whenever no extractor was supplied -
+    // which is the default configuration - and TileLoader's catch turned that
+    // into a silent retry, so the tile simply never appeared.
+    this._getIDForLayerFeature = options.getIDForLayerFeature || this.defaultGetIDForLayerFeature.bind(this);
 
     // Initialize debug logger
     this.logger = createLogger('MVTSource');
@@ -461,7 +476,15 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
   private defaultGetIDForLayerFeature(feature: VectorTileFeature): string | number {
     const props = feature.properties;
 
-    // Try configured default property first
+    // The tile's own feature id first. This is the identity field the MVT spec
+    // defines, and the exported MVTUtils.extractFeatureId has always called it
+    // "most reliable" - but this default ignored it entirely and went straight
+    // to the properties, so the library disagreed with its own utility.
+    if (feature.id !== undefined && feature.id !== null) {
+      return feature.id;
+    }
+
+    // Then the configured default property.
     const defaultValue = this._extractFeatureProperty(props, this._defaultFeatureId);
     if (defaultValue !== null) return defaultValue;
 
@@ -472,8 +495,29 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       if (value !== null) return value;
     }
 
-    // Generate random ID as last resort
-    return `feature_${Math.random().toString(36).substring(2, 11)}`;
+    // Last resort: hash the properties. This used to be Math.random(), which
+    // gave the same feature a different id every time its tile was parsed - so
+    // a feature spanning two tiles got two identities, could never be merged
+    // across them, and lost its selection on every redraw.
+    return MVTSource._hashProperties(props);
+  }
+
+  /**
+   * Stable id for a feature that carries none, derived from its properties.
+   *
+   * Two features with identical properties collide, which is the best that can
+   * be done without an id: they are indistinguishable to this library.
+   */
+  private static _hashProperties(properties: Record<string, unknown>): string {
+    const serialized = JSON.stringify(properties, Object.keys(properties).sort());
+
+    let hash = 0;
+    for (let i = 0; i < serialized.length; i++) {
+      hash = (hash << 5) - hash + serialized.charCodeAt(i);
+      hash |= 0;
+    }
+
+    return `feature_${Math.abs(hash)}`;
   }
 
   /**
@@ -816,18 +860,24 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     return new Promise((resolve) => {
       const deadline = Date.now() + timeoutMs;
 
+      const settle = (loaded: boolean): void => {
+        this._tileLoadedResolvers.delete(settle);
+        resolve(loaded);
+      };
+      this._tileLoadedResolvers.add(settle);
+
       const poll = (): void => {
         if (this._disposed) {
-          resolve(false);
+          settle(false);
           return;
         }
         if (this._allVisibleTilesLoaded()) {
-          resolve(true);
+          settle(true);
           return;
         }
         if (Date.now() >= deadline) {
           this.logger.warn('tileLoaded() timed out waiting for visible tiles');
-          resolve(false);
+          settle(false);
           return;
         }
         const timer = setTimeout(() => {
@@ -1269,7 +1319,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       feature.setSelected(true);
       this._scheduleRedrawForFeature(featureId);
 
-      if (this._featureSelectionCallback) {
+      if (this._wantsFeatureData()) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
           void this._callFeatureSelectionCallback(featureId, vectorFeature, true).catch((error) => {
@@ -1304,7 +1354,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       feature.setSelected(false);
       this._scheduleRedrawForFeature(featureId);
 
-      if (this._featureSelectionCallback) {
+      if (this._wantsFeatureData()) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
           void this._callFeatureSelectionCallback(featureId, vectorFeature, false).catch((error) => {
@@ -1546,7 +1596,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       if (feature) {
         feature.setSelected(false);
 
-        if (this._featureSelectionCallback) {
+        if (this._wantsFeatureData()) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
             callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, false));
@@ -1576,7 +1626,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       if (feature) {
         feature.setSelected(true);
 
-        if (this._featureSelectionCallback) {
+        if (this._wantsFeatureData()) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
             callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, true));
@@ -1610,7 +1660,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       if (feature) {
         feature.setSelected(false);
 
-        if (this._featureSelectionCallback) {
+        if (this._wantsFeatureData()) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
             callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, false));
@@ -2109,6 +2159,18 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
   /**
    * Merge all features with the same ID from PBF data into a single GeoJSON feature
    */
+  /**
+   * Whether anything needs a feature's GeoJSON form on selection.
+   *
+   * This used to be a bare `featureSelectionCallback` check, which meant
+   * `getReplacementFeature` - a separate, documented option whose entire job
+   * is to draw a high-detail overlay - did nothing at all unless a callback
+   * happened to be supplied alongside it.
+   */
+  private _wantsFeatureData(): boolean {
+    return Boolean(this._featureSelectionCallback || this._getReplacementFeature);
+  }
+
   /** Load the merge subsystem once, and reuse it thereafter. */
   private async _getGeometryMerger(): Promise<GeometryMerger> {
     if (this._geometryMerger) return this._geometryMerger;
@@ -2213,7 +2275,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     originalFeature: import('@mapbox/vector-tile').VectorTileFeature,
     selected: boolean,
   ): Promise<void> {
-    if (!this._featureSelectionCallback) return;
+    if (!this._wantsFeatureData()) return;
 
     try {
       let featureData = this._replacedFeatures[featureId];
@@ -2290,7 +2352,11 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
         };
       }
 
-      this._featureSelectionCallback(featureId, featureData, selected);
+      // Guarded here, not at the top: the replacement overlay must still be
+      // built for callers who supplied getReplacementFeature and no callback.
+      if (this._featureSelectionCallback) {
+        this._featureSelectionCallback(featureId, featureData, selected);
+      }
     } catch (error) {
       this.logger.error('Error in feature selection callback:', error);
     }
@@ -2315,6 +2381,9 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     // Cancel every timer. Only _redrawDebounceTimer used to be cleared.
     this._tileLoadedTimers.forEach(clearTimeout);
     this._tileLoadedTimers.clear();
+    // Settle before the timers are gone, or every waiting promise hangs.
+    this._tileLoadedResolvers.forEach((settle) => settle(false));
+    this._tileLoadedResolvers.clear();
     this._deferredTimers.forEach(clearTimeout);
     this._deferredTimers.clear();
     if (this._hoverTimer) {

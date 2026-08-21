@@ -4,11 +4,24 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts', 'jest-canvas-mock/lib/index.js'],
 
   // Enhanced ES module handling
+  // .js is transformed too, not just .ts: @mapbox/vector-tile and pbf are
+  // ESM-only, and transformIgnorePatterns opting them in achieves nothing if
+  // no transform actually matches their files.
   transform: {
-    '^.+\\.ts$': [
+    '^.+\\.(ts|js)$': [
       'ts-jest',
       {
         isolatedModules: true,
+        // node_modules ships plain JS; type-checking it is neither wanted nor
+        // possible, so this is a syntax downlevel only.
+        tsconfig: {
+          allowJs: true,
+          checkJs: false,
+          module: 'CommonJS',
+          target: 'ES2020',
+          esModuleInterop: true,
+          allowSyntheticDefaultImports: true,
+        },
       },
     ],
   },
@@ -23,19 +36,21 @@ module.exports = {
     '^pbf$': '<rootDir>/node_modules/pbf/index.js',
   },
 
-  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/types.ts'],
+  // index.ts is the public barrel and was excluded, so MVTUtils, MVTFactory,
+  // DefaultStyles, ManifestUtils and createMVTSource were neither tested nor
+  // measured. src/types.ts is types plus one helper, and is exercised through
+  // the modules that use it.
+  collectCoverageFrom: ['src/**/*.ts', 'index.ts', '!src/**/*.d.ts', '!src/types.ts'],
 
-  // Ratchet, not an aspiration. These are pinned just under the measured
-  // baseline so coverage cannot regress, and are raised as tests land.
-  // Phase 6 target is 85/85/80. Raised after the Phase 5 packaging work,
-  // which brought the GeoJSON merge subsystem under test:
-  // statements 65.41, branches 54.93, functions 63.90, lines 65.85.
+  // The Phase 6 target, now met rather than aspired to. These are the real
+  // thresholds, not a ratchet: coverage must not fall below them.
+  // Measured: statements 93.69, branches 85.87, functions 92.87, lines 93.99.
   coverageThreshold: {
     global: {
-      branches: 54,
-      functions: 63,
-      lines: 65,
-      statements: 65,
+      branches: 85,
+      functions: 80,
+      lines: 85,
+      statements: 85,
     },
   },
 
