@@ -1,4 +1,6 @@
 import { VectorTileFeature } from '@mapbox/vector-tile';
+import { ColorUtils } from './ColorUtils';
+import { getTileContext2D, pixelRatioOf, toDevicePixels } from './render/TileCanvas';
 import {
   MVTFeatureOptions,
   TileFeatureData,
@@ -153,7 +155,13 @@ export class MVTFeature {
     const tile = this.tiles[tileContext.id];
     if (!tile) return;
 
-    const currentStyle = this.mVTSource.getStyleForFeature?.(tile.vectorTileFeature, this.featureId) || this.style;
+    // Hand the style function the tile it is drawing for, so styling can vary
+    // by zoom without round-tripping through setFilter and a full re-parse.
+    const currentStyle =
+      this.mVTSource.getStyleForFeature?.(tile.vectorTileFeature, this.featureId, {
+        zoom: tileContext.zoom,
+        tileContext,
+      }) || this.style;
 
     const isReplaced = this.selected && this.mVTSource.isFeatureReplaced?.(this.featureId);
 
@@ -177,7 +185,7 @@ export class MVTFeature {
    * Default drawing with cached contexts
    */
   defaultDraw(tileContext: TileContext, tile: TileFeatureData, style: FeatureStyle): void {
-    const context2d = tileContext.canvas.getContext('2d');
+    const context2d = getTileContext2D(tileContext);
     if (!context2d) return;
     this._applyStyleToContext(context2d, style);
 
@@ -199,7 +207,12 @@ export class MVTFeature {
    */
   private _applyStyleToContext(context: CanvasRenderingContext2D, style: FeatureStyle): void {
     if (style.fillStyle) {
-      context.fillStyle = style.fillStyle;
+      // fillOpacity was declared in the public type and documented, but no code
+      // path had ever read it, so setting it did nothing at all. It multiplies
+      // the fill colour's own alpha rather than replacing it, so a style that
+      // sets both gets the product it would get from any other renderer.
+      context.fillStyle =
+        style.fillOpacity !== undefined ? ColorUtils.scaleAlpha(style.fillStyle, style.fillOpacity) : style.fillStyle;
     }
     if (style.strokeStyle) {
       context.strokeStyle = style.strokeStyle;
@@ -450,9 +463,15 @@ export class MVTFeature {
     const paths2d = this._getOptimizedPaths2D(tileContext, tile);
     if (!paths2d) return false;
 
-    const context2d = tileContext.canvas.getContext('2d');
+    const context2d = getTileContext2D(tileContext);
     if (!context2d) return false;
-    return context2d.isPointInPath(paths2d, point.x, point.y);
+
+    // The path is in CSS pixels and gets scaled by the context transform, but
+    // isPointInPath treats its coordinates as untransformed canvas pixels, so
+    // the query point has to be scaled by hand. Skipping this puts every click
+    // on a retina screen off by exactly the pixel ratio.
+    const ratio = pixelRatioOf(tileContext);
+    return context2d.isPointInPath(paths2d, toDevicePixels(point.x, ratio), toDevicePixels(point.y, ratio));
   }
 
   /**

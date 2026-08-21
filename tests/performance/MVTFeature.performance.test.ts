@@ -49,6 +49,8 @@ class MockCanvas {
       stroke: jest.fn(),
       save: jest.fn(),
       restore: jest.fn(),
+      setTransform: jest.fn(),
+      resetTransform: jest.fn(),
       isPointInPath: jest.fn(() => false),
     };
   }

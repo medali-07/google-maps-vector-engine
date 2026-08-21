@@ -9,6 +9,14 @@ import { GeometryMerger } from './geojson/GeometryMerger';
 import { StyleResolver, DEFAULT_COLORS } from './style/StyleResolver';
 import { TileLoader } from './tiles/TileLoader';
 import { RedrawScheduler } from './render/RedrawScheduler';
+import { FrameThrottle } from './render/FrameThrottle';
+import {
+  DEFAULT_MAX_PIXEL_RATIO,
+  clearTileCanvas,
+  createTileCanvas,
+  getTileContext2D,
+  resolvePixelRatio,
+} from './render/TileCanvas';
 import {
   MVTSourceOptions,
   TileContext,
@@ -18,6 +26,7 @@ import {
   FeatureStyle,
   FeatureStyleFunction,
   FilterFunction,
+  StyleContext,
   GeoJSONFeature,
   FeatureReplacementFunction,
   FeatureSelectionCallback,
@@ -111,6 +120,18 @@ export class MVTSource implements google.maps.MapType {
   private _hoverDelay = 0;
   private event: MVTMouseEvent | null = null;
 
+  // Rendering configuration
+  private _maxPixelRatio: number = DEFAULT_MAX_PIXEL_RATIO;
+  private _pixelRatio = 1;
+  private _hoverCursor: string | false = 'pointer';
+  private _fadeInDuration = MVTSource.DEFAULT_FADE_IN_MS;
+
+  /** Cursor the map had before we overrode it, restored when hover ends. */
+  private _cursorOverridden = false;
+
+  /** Frame-aligned gate in front of the hover hit test. */
+  private _hoverThrottle!: FrameThrottle<MVTMouseEvent>;
+
   // Event listener references for cleanup
   private _eventListeners: google.maps.MapsEventListener[] = [];
 
@@ -121,6 +142,9 @@ export class MVTSource implements google.maps.MapType {
 
   // Cache size limits to prevent memory leaks
   private static readonly MAX_TILES_CACHE_SIZE = 100;
+
+  /** Default tile fade-in, in milliseconds. */
+  private static readonly DEFAULT_FADE_IN_MS = 150;
 
   private _tileLoader!: TileLoader;
 
@@ -166,6 +190,17 @@ export class MVTSource implements google.maps.MapType {
     this._limitToFirstVisibleLayer = options.limitToFirstVisibleLayer || false;
     this._hoverDelay = options.hoverDelay || 0;
 
+    // Rendering configuration
+    this._maxPixelRatio = options.maxPixelRatio ?? DEFAULT_MAX_PIXEL_RATIO;
+    this._pixelRatio = resolvePixelRatio(this._maxPixelRatio);
+    this._hoverCursor = options.hoverCursor !== undefined ? options.hoverCursor : 'pointer';
+    this._fadeInDuration = options.fadeInDuration ?? MVTSource.DEFAULT_FADE_IN_MS;
+
+    // Hover used to run a full hit-test sweep synchronously on every mousemove
+    // when hoverDelay was 0 - the default - which is the main source of jank on
+    // dense tiles. Gate it on a frame instead, or on hoverDelay when one is set.
+    this._hoverThrottle = new FrameThrottle<MVTMouseEvent>((event) => this._runHoverHitTest(event), this._hoverDelay);
+
     this.tileSize = new google.maps.Size(this._tileSize, this._tileSize);
     this.style = options.style || StyleResolver.defaultStyleFor;
     this._tileLoader = new TileLoader(
@@ -174,7 +209,10 @@ export class MVTSource implements google.maps.MapType {
       {
         onResponse: (tileContext, body) => this._onTileResponse(tileContext, body),
         onSettled: (tileId) => this._markTileLoaded(tileId),
-        onFailed: (tileContext) => this._drawDebugInfo(tileContext),
+        onFailed: (tileContext) => {
+          this._drawDebugInfo(tileContext);
+          this._revealTile(tileContext);
+        },
         isDisposed: () => this._disposed,
       },
       options.tileAvailabilityManifest,
@@ -417,6 +455,7 @@ export class MVTSource implements google.maps.MapType {
       canvas,
       zoom,
       tileSize: this._tileSize,
+      pixelRatio: this._pixelRatio,
       parentId,
     };
   }
@@ -443,11 +482,32 @@ export class MVTSource implements google.maps.MapType {
    * Create canvas element
    */
   private _createCanvas(ownerDocument: Document, id: string): HTMLCanvasElement {
-    const canvas = ownerDocument.createElement('canvas');
-    canvas.width = this._tileSize;
-    canvas.height = this._tileSize;
-    canvas.id = id;
+    const canvas = createTileCanvas(ownerDocument, id, this._tileSize, this._pixelRatio);
+
+    if (this._fadeInDuration > 0) {
+      // Start transparent and let _revealTile ramp it up once there is
+      // something to show. Without this a slow connection paints a grid of
+      // blank white squares that snap to full detail one by one.
+      canvas.style.opacity = '0';
+      canvas.style.transition = `opacity ${this._fadeInDuration}ms ease-out`;
+    }
+
     return canvas;
+  }
+
+  /**
+   * Make a tile visible once it has content, fading it in on first paint.
+   *
+   * Subsequent repaints of the same canvas are instant: the tile is already
+   * on screen, so re-running the ramp would make every selection change blink.
+   */
+  private _revealTile(tileContext: TileContext): void {
+    if (this._fadeInDuration <= 0) return;
+
+    const style = tileContext.canvas.style;
+    if (style.opacity === '1') return;
+
+    style.opacity = '1';
   }
 
   /**
@@ -640,6 +700,7 @@ export class MVTSource implements google.maps.MapType {
       this._drawDebugInfo(tileContext);
     }
     this._setTileDrawn(tileContext);
+    this._revealTile(tileContext);
   }
 
   /**
@@ -688,7 +749,8 @@ export class MVTSource implements google.maps.MapType {
 
     const tile = this.getTileObject(tileContext.id);
     const { width, height } = { width: this._tileSize, height: this._tileSize };
-    const context2d = tileContext.canvas.getContext('2d')!;
+    const context2d = getTileContext2D(tileContext);
+    if (!context2d) return;
 
     context2d.strokeStyle = DEFAULT_COLORS.DEBUG_STROKE;
     context2d.fillStyle = DEFAULT_COLORS.DEBUG_FILL;
@@ -736,14 +798,16 @@ export class MVTSource implements google.maps.MapType {
       this._eventListeners.push(clickListener);
     }
 
-    if (this._onMouseHoverCallback) {
+    // mousemove used to be wired only when an onMouseHover callback was passed,
+    // which left FeatureStyle.hover - a documented, exported option - dead for
+    // everyone who did not also pass a callback. Hover is now wired whenever
+    // anything can observe it: a callback, or cursor feedback.
+    if (this._onMouseHoverCallback || this._hoverCursor !== false) {
       const mouseMoveListener = this.map.addListener('mousemove', (event: google.maps.MapMouseEvent) => {
-        if (event.latLng && this._onMouseHoverCallback) {
-          const mvtEvent = this._convertToMVTEvent(event);
-          if (mvtEvent) {
-            const mouseOptions = this._getMouseOptions(true);
-            this._mouseEvent(mvtEvent, this._onMouseHoverCallback, mouseOptions);
-          }
+        if (!event.latLng) return;
+        const mvtEvent = this._convertToMVTEvent(event);
+        if (mvtEvent) {
+          this._hoverThrottle.submit(mvtEvent);
         }
       });
       this._eventListeners.push(mouseMoveListener);
@@ -753,14 +817,46 @@ export class MVTSource implements google.maps.MapType {
       // ever cleared by a mousemove that landed on empty space.
       const mouseOutListener = this.map.addListener('mouseout', () => {
         this.event = null;
+        this._hoverThrottle.cancel();
         if (this._hoverTimer) {
           clearTimeout(this._hoverTimer);
           this._hoverTimer = null;
         }
+        this._setHoverCursor(false);
         this.clearAllHoveredFeatures();
       });
       this._eventListeners.push(mouseOutListener);
     }
+  }
+
+  /**
+   * Resolve a hover event and apply its result.
+   *
+   * Runs behind the frame throttle, so at most once per displayed frame.
+   */
+  private _runHoverHitTest(event: MVTMouseEvent): void {
+    if (this._disposed) return;
+
+    this.event = event;
+    this._mouseEventContinue(event, this._onMouseHoverCallback, this._getMouseOptions(true));
+    this._setHoverCursor(Boolean(event.feature));
+  }
+
+  /**
+   * Show or clear the clickable cursor over the map.
+   *
+   * The library previously gave no pointer feedback at all, so a map full of
+   * clickable features looked inert. Only touched when it actually changes:
+   * setOptions on every frame would fight the map's own drag cursor.
+   */
+  private _setHoverCursor(overFeature: boolean): void {
+    if (this._hoverCursor === false) return;
+    if (overFeature === this._cursorOverridden) return;
+
+    this._cursorOverridden = overFeature;
+    // null restores the map's own cursor rather than pinning it to 'default',
+    // which would break the grab cursor shown while dragging.
+    this.map.setOptions({ draggableCursor: overFeature ? this._hoverCursor : null });
   }
 
   /**
@@ -799,6 +895,7 @@ export class MVTSource implements google.maps.MapType {
       setSelected: this._setSelectedOnClick,
       limitToFirstVisibleLayer: this._limitToFirstVisibleLayer,
       delay: mouseHover ? this._hoverDelay : 0,
+      hover: mouseHover,
     };
   }
 
@@ -844,6 +941,11 @@ export class MVTSource implements google.maps.MapType {
     const tileContext = this._visibleTiles[id];
 
     if (!tileContext) {
+      // Leaving the loaded tiles has to drop hover too, or the last feature
+      // stays highlighted while the pointer sits over empty space.
+      if (options?.hover) {
+        this.clearAllHoveredFeatures();
+      }
       // Call the callback if provided
       if (callbackFunction) {
         callbackFunction(event);
@@ -893,8 +995,12 @@ export class MVTSource implements google.maps.MapType {
       const featureId = event.feature.featureId;
       const wasSelected = this._selectedFeatureIds.has(featureId);
 
-      // Handle hover vs selection based on callback type
-      if (callbackFunction && callbackFunction === this._onMouseHoverCallback) {
+      // Hover is declared by the caller, not inferred from which callback is
+      // in play. Comparing against _onMouseHoverCallback misreads the event
+      // whenever there is no hover callback - cursor-only hover would then
+      // fall through and *select* every feature the pointer crossed - and
+      // whenever the same function is passed as both onClick and onMouseHover.
+      if (options?.hover) {
         this._setFeatureHover(featureId, true);
         selectionChanged = true;
       } else if (options?.setSelected !== false) {
@@ -916,7 +1022,7 @@ export class MVTSource implements google.maps.MapType {
       (event as any).isSelected = this._selectedFeatureIds.has(featureId);
     } else {
       // Clear hovered features when no feature is detected and this is a hover event
-      if (callbackFunction && callbackFunction === this._onMouseHoverCallback) {
+      if (options?.hover) {
         this.clearAllHoveredFeatures();
       }
     }
@@ -1332,16 +1438,15 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Get current style for feature with selection/hover state
    */
-  getStyleForFeature(feature: VectorTileFeature, featureId: string | number): FeatureStyle {
-    return this._styleResolver.resolve(feature, featureId);
+  getStyleForFeature(feature: VectorTileFeature, featureId: string | number, context?: StyleContext): FeatureStyle {
+    return this._styleResolver.resolve(feature, featureId, context);
   }
 
   /**
    * Clear tile canvas
    */
   clearTile(canvas: HTMLCanvasElement): void {
-    const context = canvas.getContext('2d')!;
-    context.clearRect(0, 0, canvas.width, canvas.height);
+    clearTileCanvas(canvas);
   }
 
   /**
@@ -1616,9 +1721,14 @@ export class MVTSource implements google.maps.MapType {
         // Convert PBF coordinates to geographic coordinates
         const tileContext = this._visibleTiles[tileId];
         if (tileContext) {
+          // Overzoomed tiles carry the *parent* tile's geometry, so the
+          // coordinates have to be projected from the parent's z/x/y. Deriving
+          // them from the child put every overlay for an overzoomed feature at
+          // the wrong place on the map.
+          const sourceTileId = tileContext.parentId || tileContext.id;
           const convertedCoords = this._geometryMerger.convertPBFCoordinatesToGeoJSON(
             coordinates,
-            this.getTileObject(tileContext.id),
+            this.getTileObject(sourceTileId),
             tileContext.tileSize,
             tileData.divisor,
             vectorFeature.type,
@@ -1785,7 +1895,12 @@ export class MVTSource implements google.maps.MapType {
       clearTimeout(this._hoverTimer);
       this._hoverTimer = null;
     }
+    this._hoverThrottle.cancel();
     this._redraws.dispose();
+
+    // Hand the cursor back before the listeners go, or a map that outlives
+    // this source keeps showing the pointer over geometry that is gone.
+    this._setHoverCursor(false);
 
     // Deselect before dropping the overlays it needs to clean up.
     this.deselectAllFeatures();

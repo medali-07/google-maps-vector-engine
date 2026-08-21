@@ -106,6 +106,8 @@ class MockCanvas {
       stroke: jest.fn(),
       save: jest.fn(),
       restore: jest.fn(),
+      setTransform: jest.fn(),
+      resetTransform: jest.fn(),
       isPointInPath: jest.fn(() => false),
       measureText: jest.fn(() => ({ width: 50 })),
       fillText: jest.fn(),

@@ -33,8 +33,23 @@ export interface FeatureStyle {
   hover?: Partial<FeatureStyle>; // Embedded hover style for hover states
 }
 
+/**
+ * Rendering context handed to a style function alongside the feature.
+ *
+ * Optional so that existing one-argument style functions keep working
+ * unchanged. `FilterFunction` has always received the tile context; style
+ * functions receiving only the feature was an inconsistency, and it forced
+ * zoom-dependent styling to go through `setFilter` on every `zoom_changed`,
+ * which triggers a full re-parse of every tile.
+ */
+export interface StyleContext {
+  /** Integer zoom the tile is being rendered at. */
+  zoom: number;
+  tileContext: TileContext;
+}
+
 export interface FeatureStyleFunction {
-  (feature: VectorTileFeature): FeatureStyle;
+  (feature: VectorTileFeature, context?: StyleContext): FeatureStyle;
 }
 
 // Event interfaces
@@ -50,6 +65,15 @@ export interface MouseEventOptions {
   setSelected?: boolean;
   limitToFirstVisibleLayer?: boolean;
   delay?: number;
+  /**
+   * True when the event is a hover rather than a click.
+   *
+   * Stated explicitly rather than inferred from which callback is in play:
+   * hover used to be detected by comparing the callback against
+   * `onMouseHover`, which misidentifies the event whenever there is no hover
+   * callback at all, and whenever the same function is passed as both.
+   */
+  hover?: boolean;
 }
 
 // Tile and context interfaces
@@ -57,7 +81,13 @@ export interface TileContext {
   id: string;
   canvas: HTMLCanvasElement;
   zoom: number;
+  /** Tile edge length in CSS pixels. The backing store is this times `pixelRatio`. */
   tileSize: number;
+  /**
+   * Backing-store scale the canvas was created at. Absent means 1:1, which is
+   * how a tile context built outside the library is treated.
+   */
+  pixelRatio?: number;
   parentId?: string;
   vectorTile?: VectorTile;
 }
@@ -138,6 +168,33 @@ export interface MVTSourceOptions {
   setSelectedOnClick?: boolean;
   limitToFirstVisibleLayer?: boolean;
   hoverDelay?: number;
+
+  // Rendering configuration
+  /**
+   * Ceiling on the backing-store scale used for tile canvases.
+   *
+   * Tiles render at `min(window.devicePixelRatio, maxPixelRatio)`. Raising it
+   * above the default of 2 sharpens tiles on 3x and 4x phone screens at a
+   * quadratic cost in memory; setting it to 1 restores the pre-1.0 behaviour
+   * of rendering at CSS resolution.
+   */
+  maxPixelRatio?: number;
+
+  /**
+   * CSS cursor to show while the pointer is over a clickable feature.
+   *
+   * Defaults to `'pointer'`. Pass `false` to leave the cursor alone, which
+   * also skips wiring the `mousemove` listener when no hover callback and no
+   * hover styling are in use.
+   */
+  hoverCursor?: string | false;
+
+  /**
+   * Milliseconds to fade a tile in over once it first paints.
+   *
+   * Defaults to 150. Set to 0 to have tiles appear instantly, as before.
+   */
+  fadeInDuration?: number;
 }
 
 export interface MVTLayerOptions {
