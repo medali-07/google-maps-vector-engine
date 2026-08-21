@@ -153,4 +153,212 @@ describe('GeometryMerger', () => {
       expect(merger.convertPBFCoordinatesToGeoJSON([[{ x: 0, y: 0 }]], tile, 256, 1, 99)).toBeNull();
     });
   });
+
+  describe('degenerate input and error paths', () => {
+    test('skips a ring with too few points to be a polygon', () => {
+      const result = merger.mergeConnectingRings([
+        [[0, 0]],
+        [
+          [1, 1],
+          [2, 2],
+        ],
+      ]);
+
+      // Nothing mergeable, but it must not throw or lose the input entirely.
+      expect(result.type).toMatch(/Polygon|MultiPolygon/);
+    });
+
+    test('handles degenerate rings that a decoder can actually produce', () => {
+      // Zero-area rings: collinear points, and a ring collapsed to one place.
+      const collinear = [
+        [0, 0],
+        [5, 0],
+        [10, 0],
+        [0, 0],
+      ];
+      const degenerate = [
+        [20, 20],
+        [20, 20],
+        [20, 20],
+      ];
+
+      const result = merger.mergeConnectingRings([collinear, degenerate]);
+
+      expect(result).toBeDefined();
+      expect(result.type).toMatch(/Polygon|MultiPolygon/);
+    });
+
+    test('converts coordinates for a tile away from the origin', () => {
+      const result = merger.convertPBFCoordinatesToGeoJSON(
+        [[{ x: 0, y: 0 }]],
+        { z: 2, x: 3, y: 1 },
+        256,
+        1,
+        3,
+      ) as number[][][];
+
+      const [lng, lat] = result[0][0];
+      // Tile 3 of 4 across starts three quarters of the way around the world.
+      expect(lng).toBeCloseTo(90, 5);
+      expect(lat).toBeGreaterThan(0);
+    });
+
+    test('reports null when conversion throws on malformed input', () => {
+      const error = jest.spyOn(console, 'error').mockImplementation();
+
+      const result = merger.convertPBFCoordinatesToGeoJSON(
+        null as unknown as unknown[],
+        { z: 0, x: 0, y: 0 },
+        256,
+        1,
+        3,
+      );
+
+      expect(result).toBeNull();
+      error.mockRestore();
+    });
+
+    test('a point group given as a bare point is still converted', () => {
+      const result = merger.convertPBFCoordinatesToGeoJSON(
+        [{ x: 128, y: 128 }],
+        { z: 0, x: 0, y: 0 },
+        256,
+        1,
+        1,
+      ) as number[][];
+
+      expect(result[0][0]).toBeCloseTo(0, 5);
+    });
+
+    test('an empty ring list converts to an empty result', () => {
+      expect(merger.convertPBFCoordinatesToGeoJSON([], { z: 0, x: 0, y: 0 }, 256, 1, 3)).toEqual([]);
+    });
+
+    test('ensureRingClosure handles an empty ring', () => {
+      expect(merger.ensureRingClosure([])).toEqual([]);
+    });
+
+    test('merges a long chain of touching squares into one polygon', () => {
+      const chain = [0, 1, 2, 3].map((i) => square(i * 2, 0));
+
+      const result = merger.mergeConnectingRings(chain);
+
+      expect(result.type).toBe('Polygon');
+      const xs = (result.coordinates as number[][][])[0].map(([x]) => x);
+      expect(Math.max(...xs)).toBe(8);
+    });
+  });
+
+  describe('internal helpers', () => {
+    test('extracting coordinates tolerates a feature with no geometry', () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation();
+
+      expect((merger as any)._getAllCoordinates({})).toEqual([]);
+      expect((merger as any)._getAllCoordinates({ geometry: {} })).toEqual([]);
+
+      warn.mockRestore();
+    });
+
+    test('extracting coordinates flattens every ring', () => {
+      const coords = (merger as any)._getAllCoordinates({
+        geometry: {
+          coordinates: [
+            [
+              [0, 0],
+              [1, 1],
+            ],
+            [[2, 2]],
+          ],
+        },
+      });
+
+      expect(coords).toEqual([
+        [0, 0],
+        [1, 1],
+        [2, 2],
+      ]);
+    });
+
+    test('shared coordinates are detected exactly', () => {
+      const a = [
+        [0, 0],
+        [1, 1],
+      ];
+      const b = [
+        [1, 1],
+        [2, 2],
+      ];
+      const c = [
+        [5, 5],
+        [6, 6],
+      ];
+
+      expect((merger as any)._hasSharedCoordinates(a, b)).toBe(true);
+      expect((merger as any)._hasSharedCoordinates(a, c)).toBe(false);
+      expect((merger as any)._hasSharedCoordinates([], a)).toBe(false);
+    });
+
+    test('an intersection failure is treated as not touching, not as a crash', () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation();
+
+      const touching = (merger as any)._polygonsTouchOrOverlap({}, {}, [], []);
+
+      expect(touching).toBe(false);
+      warn.mockRestore();
+    });
+
+    test('unioning a single polygon returns it unchanged', () => {
+      const only = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [square(0, 0)] } };
+
+      expect((merger as any)._unionPolygons([only])).toBe(only);
+    });
+
+    test('unioning nothing returns null', () => {
+      expect((merger as any)._unionPolygons([])).toBeNull();
+    });
+
+    test('a union failure is reported rather than thrown', () => {
+      const error = jest.spyOn(console, 'error').mockImplementation();
+
+      const result = (merger as any)._unionPolygons([{}, {}]);
+
+      expect(result).toBeNull();
+      error.mockRestore();
+    });
+
+    test('converts a multipolygon result back to plain geometry', () => {
+      const multi = {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'MultiPolygon', coordinates: [[square(0, 0)], [square(9, 9)]] },
+      };
+
+      const result = (merger as any)._convertTurfPolygonsToGeometry([multi]);
+
+      expect(result.type).toBe('MultiPolygon');
+      expect(result.coordinates).toHaveLength(2);
+    });
+
+    test('flattens several results, polygons and multipolygons alike, into one multipolygon', () => {
+      const poly = {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Polygon', coordinates: [square(0, 0)] },
+      };
+      const multi = {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'MultiPolygon', coordinates: [[square(9, 9)], [square(20, 20)]] },
+      };
+
+      const result = (merger as any)._convertTurfPolygonsToGeometry([poly, multi]);
+
+      expect(result.type).toBe('MultiPolygon');
+      expect(result.coordinates).toHaveLength(3);
+    });
+
+    test('converting nothing gives an empty polygon', () => {
+      expect((merger as any)._convertTurfPolygonsToGeometry([])).toEqual({ type: 'Polygon', coordinates: [] });
+    });
+  });
 });

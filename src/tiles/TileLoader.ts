@@ -76,7 +76,13 @@ export class TileLoader {
   // ---------------------------------------------------------------------------
 
   async initializeManifest(): Promise<void> {
-    if (!this._manifestSource) return;
+    if (!this._manifestSource) {
+      // Clear rather than return: setManifest(undefined) is the documented way
+      // to remove a manifest, and returning early left the previous one
+      // resolved, so tiles stayed filtered with no way to un-filter them.
+      this._resolvedManifest = undefined;
+      return;
+    }
 
     try {
       if (typeof this._manifestSource === 'function') {
