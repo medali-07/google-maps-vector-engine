@@ -5,9 +5,10 @@ import { MVTFeature } from './MVTFeature';
 import { Mercator } from './Mercator';
 import { ColorUtils } from './ColorUtils';
 import { createLogger, debugLogger } from './DebugLogger';
-// @ts-expect-error - Turf 7 removed the `Properties` export; the whole import is
-// replaced by granular @turf/union + @turf/intersect packages in Phase 5.
-import { polygon, intersect, union, Feature, Polygon, MultiPolygon, Properties } from '@turf/turf';
+import { GeometryMerger } from './geojson/GeometryMerger';
+import { StyleResolver, DEFAULT_COLORS } from './style/StyleResolver';
+import { TileLoader } from './tiles/TileLoader';
+import { RedrawScheduler } from './render/RedrawScheduler';
 import {
   MVTSourceOptions,
   TileContext,
@@ -17,7 +18,6 @@ import {
   FeatureStyle,
   FeatureStyleFunction,
   FilterFunction,
-  GeometryType,
   GeoJSONFeature,
   FeatureReplacementFunction,
   FeatureSelectionCallback,
@@ -47,6 +47,7 @@ export class MVTSource implements google.maps.MapType {
   public radius: number = 6378137;
 
   private logger = createLogger('MVTSource');
+  private _geometryMerger = new GeometryMerger();
 
   // Core configuration
   private _url: string;
@@ -85,9 +86,6 @@ export class MVTSource implements google.maps.MapType {
    *  world repeats horizontally. */
   private _mountedTiles: Map<Element, string> = new Map();
 
-  /** In-flight tile fetches, so they can be aborted on release and dispose. */
-  private _tileRequests: Map<string, AbortController> = new Map();
-
   /** Tile ids that have completed a fetch (successfully or not) for the
    *  current visible set. Drives tileLoaded(). */
   private _loadedTileIds: Set<string> = new Set();
@@ -116,29 +114,15 @@ export class MVTSource implements google.maps.MapType {
   // Event listener references for cleanup
   private _eventListeners: google.maps.MapsEventListener[] = [];
 
-  // Tile availability manifest
-  private _tileAvailabilityManifest?: TileAvailabilitySource;
-  private _resolvedManifest?: TileManifest;
-
   // Batched redraw system for smooth rendering
-  private _pendingRedraws: Set<string> = new Set();
-  private _redrawDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly REDRAW_DEBOUNCE_MS = 16;
+  private _redraws: RedrawScheduler = new RedrawScheduler((tileIds) => this._repaintTiles(tileIds));
 
-  private _styleCache: Map<string, FeatureStyle> = new Map();
-  private _styleCacheVersion: number = 0;
-  private static readonly MAX_STYLE_CACHE_SIZE = 1000;
+  private _styleResolver!: StyleResolver;
 
   // Cache size limits to prevent memory leaks
   private static readonly MAX_TILES_CACHE_SIZE = 100;
 
-  // Tile fetch policy
-  private static readonly TILE_TIMEOUT_MS = 30000;
-  private static readonly TILE_MAX_RETRIES = 2;
-  private static readonly TILE_RETRY_BASE_MS = 500;
-
-  /** Pending retry timers, cancelled on dispose. */
-  private _retryTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+  private _tileLoader!: TileLoader;
 
   /** Pending tileLoaded() poll timers, cancelled on dispose. */
   private _tileLoadedTimers: Set<ReturnType<typeof setTimeout>> = new Set();
@@ -148,22 +132,6 @@ export class MVTSource implements google.maps.MapType {
 
   /** Pending hover-delay timer, cancelled on dispose. */
   private _hoverTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // Default color palette for consistency
-  private static readonly DEFAULT_COLORS = {
-    POINT_FILL: 'rgba(49,79,79,1)',
-    LINE_STROKE: 'rgba(136, 86, 167, 1)',
-    POLYGON_FILL: 'rgba(188, 189, 220, 0.5)',
-    POLYGON_STROKE: 'rgba(136, 86, 167, 1)',
-    SELECTED_POINT: 'rgba(255,255,0,0.8)',
-    SELECTED_LINE: 'rgba(255,25,0,0.8)',
-    SELECTED_POLYGON_FILL: 'rgba(255,140,0,0.4)',
-    SELECTED_POLYGON_STROKE: 'rgba(255,140,0,1)',
-    DEBUG_STROKE: '#000000',
-    DEBUG_FILL: '#FFFF00',
-    DEBUG_TEXT_BG: 'rgba(255, 255, 255, 0.8)',
-    DEBUG_TEXT: '#000000',
-  };
 
   public style: FeatureStyle | FeatureStyleFunction;
 
@@ -189,9 +157,6 @@ export class MVTSource implements google.maps.MapType {
     this._getReplacementFeature = options.getReplacementFeature;
     this._featureSelectionCallback = options.featureSelectionCallback;
 
-    // Tile availability manifest configuration
-    this._tileAvailabilityManifest = options.tileAvailabilityManifest;
-
     // Event handling configuration
     this._onClickCallback = options.onClick;
     this._onMouseHoverCallback = options.onMouseHover;
@@ -202,7 +167,24 @@ export class MVTSource implements google.maps.MapType {
     this._hoverDelay = options.hoverDelay || 0;
 
     this.tileSize = new google.maps.Size(this._tileSize, this._tileSize);
-    this.style = options.style || this.defaultStyle.bind(this);
+    this.style = options.style || StyleResolver.defaultStyleFor;
+    this._tileLoader = new TileLoader(
+      this._url,
+      this._xhrHeaders,
+      {
+        onResponse: (tileContext, body) => this._onTileResponse(tileContext, body),
+        onSettled: (tileId) => this._markTileLoaded(tileId),
+        onFailed: (tileContext) => this._drawDebugInfo(tileContext),
+        isDisposed: () => this._disposed,
+      },
+      options.tileAvailabilityManifest,
+    );
+
+    this._styleResolver = new StyleResolver(this.style, {
+      isSelected: (id) => this._selectedFeatureIds.has(id),
+      isHovered: (id) => this._hoveredFeatureIds.has(id),
+      featureCount: () => this._featureIndex.size,
+    });
     this.name = 'Optimized MVT Layer';
     this.alt = 'Optimized Vector Tile Layer';
     this.maxZoom = typeof this._sourceMaxZoom === 'number' ? this._sourceMaxZoom : 18;
@@ -222,7 +204,7 @@ export class MVTSource implements google.maps.MapType {
 
     // Initialize manifest asynchronously, but add to map immediately
     // Tile requests will be handled gracefully during manifest loading
-    this._initializeManifest().catch((error) => {
+    this._tileLoader.initializeManifest().catch((error: unknown) => {
       this.logger.warn('Manifest initialization failed:', error);
     });
 
@@ -288,123 +270,6 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Initialize tile availability manifest
-   */
-  private async _initializeManifest(): Promise<void> {
-    if (!this._tileAvailabilityManifest) return;
-
-    try {
-      if (typeof this._tileAvailabilityManifest === 'function') {
-        this._resolvedManifest = await this._tileAvailabilityManifest();
-        this.logger.info('Manifest loaded from API:', Object.keys(this._resolvedManifest || {}).length, 'zoom levels');
-      } else {
-        this._resolvedManifest = this._tileAvailabilityManifest;
-        this.logger.info(
-          'Manifest loaded from static data:',
-          Object.keys(this._resolvedManifest || {}).length,
-          'zoom levels',
-        );
-      }
-    } catch (error) {
-      this.logger.warn('Failed to load tile availability manifest:', error);
-      this._resolvedManifest = undefined;
-    }
-  }
-
-  /**
-   * Check if a tile is available according to the manifest
-   */
-  private _isTileAvailable(z: number, x: number, y: number): boolean {
-    if (!this._resolvedManifest) {
-      this.logger.log(`No manifest available yet, allowing tile: ${z}/${x}/${y}`);
-      return true; // If no manifest, assume all tiles are available
-    }
-
-    const zoomLevel = z.toString();
-    const xCoordinate = x.toString();
-
-    // Check if zoom level exists in manifest
-    if (!this._resolvedManifest[zoomLevel]) {
-      this.logger.log(`Zoom level ${z} not found in manifest, rejecting tile: ${z}/${x}/${y}`);
-      return false;
-    }
-
-    // Check if x coordinate exists in manifest
-    if (!this._resolvedManifest[zoomLevel][xCoordinate]) {
-      this.logger.log(`X coordinate ${x} not found in manifest for zoom ${z}, rejecting tile: ${z}/${x}/${y}`);
-      return false;
-    }
-
-    // Check if y coordinate falls within any of the available ranges
-    const yRanges = this._resolvedManifest[zoomLevel][xCoordinate];
-    const isAvailable = yRanges.some(([yStart, yEnd]) => y >= yStart && y <= yEnd);
-
-    if (isAvailable) {
-      this.logger.log(`Tile ${z}/${x}/${y} is available according to manifest`);
-    } else {
-      this.logger.log(`Tile ${z}/${x}/${y} not in available Y ranges: ${JSON.stringify(yRanges)}`);
-    }
-
-    return isAvailable;
-  }
-
-  /**
-   * Default styling for features
-   */
-  private defaultStyle(feature: VectorTileFeature): FeatureStyle {
-    const style: FeatureStyle = {};
-
-    switch (feature.type) {
-      case GeometryType.Point:
-        style.fillStyle = MVTSource.DEFAULT_COLORS.POINT_FILL;
-        style.radius = 5;
-        break;
-
-      case GeometryType.LineString:
-        style.strokeStyle = MVTSource.DEFAULT_COLORS.LINE_STROKE;
-        style.lineWidth = 3;
-        break;
-
-      case GeometryType.Polygon:
-        style.fillStyle = MVTSource.DEFAULT_COLORS.POLYGON_FILL;
-        style.strokeStyle = MVTSource.DEFAULT_COLORS.POLYGON_STROKE;
-        style.lineWidth = 1;
-        break;
-    }
-
-    return style;
-  }
-
-  /**
-   * Get selected style for features
-   */
-  private getSelectedStyle(feature: VectorTileFeature): FeatureStyle {
-    switch (feature.type) {
-      case GeometryType.Point:
-        return {
-          fillStyle: MVTSource.DEFAULT_COLORS.SELECTED_POINT,
-          radius: 7,
-        };
-
-      case GeometryType.LineString:
-        return {
-          strokeStyle: MVTSource.DEFAULT_COLORS.SELECTED_LINE,
-          lineWidth: 5,
-        };
-
-      case GeometryType.Polygon:
-        return {
-          fillStyle: MVTSource.DEFAULT_COLORS.SELECTED_POLYGON_FILL,
-          strokeStyle: MVTSource.DEFAULT_COLORS.SELECTED_POLYGON_STROKE,
-          lineWidth: 3,
-        };
-
-      default:
-        return {};
-    }
-  }
-
-  /**
    * Get tile for Google Maps tile system
    */
   getTile(coord: google.maps.Point, zoom: number, ownerDocument: Document): HTMLElement {
@@ -440,7 +305,7 @@ export class MVTSource implements google.maps.MapType {
 
     this.logger.log(`Releasing tile: ${tileId}`);
 
-    this._abortTileRequest(tileId);
+    this._tileLoader.abort(tileId);
     delete this._visibleTiles[tileId];
 
     for (const [layerName, layer] of Object.entries(this.mVTLayers)) {
@@ -456,7 +321,7 @@ export class MVTSource implements google.maps.MapType {
       delete this._tilesDrawn[tileId];
     }
 
-    this._pendingRedraws.delete(tileId);
+    this._redraws.cancel(tileId);
   }
 
   /**
@@ -535,7 +400,7 @@ export class MVTSource implements google.maps.MapType {
       return tileContext;
     }
 
-    this._fetchTile(tileContext);
+    this._tileLoader.fetch(tileContext, this.getTileObject(tileContext.parentId || tileContext.id));
     return tileContext;
   }
 
@@ -617,114 +482,6 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Abort an in-flight request for a tile, if any.
-   */
-  private _abortTileRequest(tileId: string): void {
-    const controller = this._tileRequests.get(tileId);
-    if (controller) {
-      controller.abort();
-      this._tileRequests.delete(tileId);
-    }
-  }
-
-  /**
-   * Fetch tile data, with cancellation, timeout and bounded retry.
-   */
-  private _fetchTile(tileContext: TileContext, attempt = 0): void {
-    const id = tileContext.parentId || tileContext.id;
-    const tile = this.getTileObject(id);
-
-    // Check tile availability against manifest
-    if (!this._isTileAvailable(tile.z, tile.x, tile.y)) {
-      this.logger.log(`Tile not available according to manifest: ${tile.z}/${tile.x}/${tile.y}`);
-      this._markTileLoaded(tileContext.id);
-      this._drawDebugInfo(tileContext);
-      return;
-    }
-
-    const src = this._url
-      .replace('{z}', tile.z.toString())
-      .replace('{x}', tile.x.toString())
-      .replace('{y}', tile.y.toString());
-
-    this.logger.log(`Requesting tile: ${src}`);
-
-    this._abortTileRequest(tileContext.id);
-    const controller = new AbortController();
-    this._tileRequests.set(tileContext.id, controller);
-
-    const timeoutId = setTimeout(() => controller.abort(), MVTSource.TILE_TIMEOUT_MS);
-
-    fetch(src, { headers: this._xhrHeaders, signal: controller.signal })
-      .then(async (response) => {
-        clearTimeout(timeoutId);
-        this.logger.log(`Tile response: ${response.status} for ${src}`);
-
-        // 204/304 are the conventional "nothing here" responses and are not
-        // failures; previously anything but 200 was silently blank.
-        if (response.status === 204 || response.status === 304) {
-          this._onTileSettled(tileContext, controller);
-          return;
-        }
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status} ${response.statusText}`);
-        }
-
-        const buffer = await response.arrayBuffer();
-        if (this._isRequestStale(tileContext, controller)) return;
-
-        this._onTileResponse(tileContext, buffer);
-        this._onTileSettled(tileContext, controller);
-      })
-      .catch((error: unknown) => {
-        clearTimeout(timeoutId);
-
-        // An abort is a deliberate cancellation, not an error.
-        if (controller.signal.aborted && !this._disposed) {
-          const timedOut = this._tileRequests.get(tileContext.id) === controller;
-          if (!timedOut) return;
-        }
-        if (this._disposed) return;
-
-        if (attempt < MVTSource.TILE_MAX_RETRIES) {
-          const backoff = MVTSource.TILE_RETRY_BASE_MS * Math.pow(2, attempt);
-          this.logger.warn(`Tile ${src} failed (attempt ${attempt + 1}), retrying in ${backoff}ms`);
-          const retryTimer = setTimeout(() => {
-            this._retryTimers.delete(retryTimer);
-            if (!this._disposed) this._fetchTile(tileContext, attempt + 1);
-          }, backoff);
-          this._retryTimers.add(retryTimer);
-          return;
-        }
-
-        // Previously every non-200 was completely silent in production: the
-        // only failure path was _drawDebugInfo, which returns immediately when
-        // debug is off.
-        this.logger.error(`Failed to load tile ${src}:`, error);
-        this._onTileSettled(tileContext, controller);
-        this._drawDebugInfo(tileContext);
-      });
-  }
-
-  /**
-   * True when a response should be discarded because the source was disposed
-   * or the tile was released while the request was in flight.
-   */
-  private _isRequestStale(tileContext: TileContext, controller: AbortController): boolean {
-    if (this._disposed) return true;
-    // A newer request replaced this one, or the tile was released.
-    return this._tileRequests.get(tileContext.id) !== controller;
-  }
-
-  private _onTileSettled(tileContext: TileContext, controller: AbortController): void {
-    if (this._tileRequests.get(tileContext.id) === controller) {
-      this._tileRequests.delete(tileContext.id);
-    }
-    this._markTileLoaded(tileContext.id);
-  }
-
-  /**
    * Decode and draw a tile response.
    */
   private _onTileResponse(tileContext: TileContext, response: ArrayBuffer): void {
@@ -781,7 +538,7 @@ export class MVTSource implements google.maps.MapType {
    *
    * @param timeoutMs Give up after this long and resolve `false`.
    */
-  async tileLoaded(timeoutMs = MVTSource.TILE_TIMEOUT_MS): Promise<boolean> {
+  async tileLoaded(timeoutMs = TileLoader.TIMEOUT_MS): Promise<boolean> {
     if (this._allVisibleTilesLoaded()) return true;
 
     return new Promise((resolve) => {
@@ -933,8 +690,8 @@ export class MVTSource implements google.maps.MapType {
     const { width, height } = { width: this._tileSize, height: this._tileSize };
     const context2d = tileContext.canvas.getContext('2d')!;
 
-    context2d.strokeStyle = MVTSource.DEFAULT_COLORS.DEBUG_STROKE;
-    context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_FILL;
+    context2d.strokeStyle = DEFAULT_COLORS.DEBUG_STROKE;
+    context2d.fillStyle = DEFAULT_COLORS.DEBUG_FILL;
     context2d.lineWidth = 1;
     context2d.strokeRect(0, 0, width, height);
     context2d.font = '12px Arial';
@@ -953,11 +710,11 @@ export class MVTSource implements google.maps.MapType {
     const textY = height / 2 - 5;
 
     // Add white background for better readability
-    context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_TEXT_BG;
+    context2d.fillStyle = DEFAULT_COLORS.DEBUG_TEXT_BG;
     context2d.fillRect(textX - 2, textY - 12, textMetrics.width + 4, 16);
 
     // Draw text in black
-    context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_TEXT;
+    context2d.fillStyle = DEFAULT_COLORS.DEBUG_TEXT;
     context2d.fillText(coordText, textX, textY);
   }
 
@@ -1282,20 +1039,14 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Schedule redraw for tiles containing a feature
+   * Queue redraws for every visible tile a feature appears in.
    */
   private _scheduleRedrawForFeature(featureId: string | number): void {
     const feature = this._featureIndex.get(featureId);
     if (!feature) return;
 
-    const tileIds = Object.keys(feature.getTiles());
-    tileIds.forEach((tileId) => {
-      if (this._visibleTiles[tileId]) {
-        this._pendingRedraws.add(tileId);
-      }
-    });
-
-    this._debouncedRedraw();
+    const tileIds = Object.keys(feature.getTiles()).filter((tileId) => this._visibleTiles[tileId]);
+    this._redraws.scheduleMany(tileIds);
   }
 
   /**
@@ -1303,39 +1054,17 @@ export class MVTSource implements google.maps.MapType {
    */
   private _scheduleRedraw(scope: 'all' | string): void {
     if (scope === 'all') {
-      Object.keys(this._visibleTiles).forEach((tileId) => {
-        this._pendingRedraws.add(tileId);
-      });
+      this._redraws.scheduleMany(Object.keys(this._visibleTiles));
     } else {
-      this._pendingRedraws.add(scope);
+      this._redraws.schedule(scope);
     }
-
-    this._debouncedRedraw();
   }
 
   /**
-   * Execute debounced redraws
+   * Repaint the given tiles from their decoded geometry.
    */
-  private _debouncedRedraw(): void {
-    if (this._redrawDebounceTimer) {
-      clearTimeout(this._redrawDebounceTimer);
-    }
-
-    this._redrawDebounceTimer = setTimeout(() => {
-      this._executePendingRedraws();
-      this._redrawDebounceTimer = null;
-    }, this.REDRAW_DEBOUNCE_MS);
-  }
-
-  /**
-   * Execute all pending redraws
-   */
-  private _executePendingRedraws(): void {
-    if (this._pendingRedraws.size === 0) return;
-
-    this.logger.log(`Executing ${this._pendingRedraws.size} pending redraws`);
-
-    this._pendingRedraws.forEach((tileId) => {
+  private _repaintTiles(tileIds: string[]): void {
+    tileIds.forEach((tileId) => {
       const tileContext = this._visibleTiles[tileId];
       if (tileContext && tileContext.vectorTile) {
         this.deleteTileDrawn(tileId);
@@ -1343,8 +1072,6 @@ export class MVTSource implements google.maps.MapType {
         this._drawVectorTile(tileContext.vectorTile, tileContext);
       }
     });
-
-    this._pendingRedraws.clear();
   }
 
   /**
@@ -1580,7 +1307,7 @@ export class MVTSource implements google.maps.MapType {
     const currentSelectedIds = Array.from(this._selectedFeatureIds);
 
     this.style = style;
-    this._invalidateStyleCache();
+    this._styleResolver.setStyle(this.style);
 
     Object.values(this.mVTLayers).forEach((layer) => {
       layer.setStyle(style);
@@ -1593,58 +1320,12 @@ export class MVTSource implements google.maps.MapType {
     });
 
     if (redrawTiles) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this._deferredTimers.delete(timer);
+        if (this._disposed) return;
         this._scheduleRedraw('all');
       }, 0);
-    }
-  }
-
-  private _getStyleCacheKey(feature: VectorTileFeature, featureId: string | number): string {
-    const isSelected = this._selectedFeatureIds.has(featureId);
-    const isHovered = this._hoveredFeatureIds.has(featureId);
-    const state = (isSelected ? 'S' : '') + (isHovered ? 'H' : '');
-    const featureHash = this._createFeatureHash(feature);
-    return `${this._styleCacheVersion}:${featureId}:${featureHash}:${state}`;
-  }
-
-  private _createFeatureHash(feature: VectorTileFeature): string {
-    const props = feature.properties || {};
-    const keyProps = [
-      'type',
-      'category',
-      'class',
-      'subtype',
-      'importance',
-      'level',
-      'land_use',
-      'population_density',
-      'area',
-      'length',
-    ];
-
-    let hash = `t${feature.type}`;
-    for (const prop of keyProps) {
-      if (props[prop] !== undefined) {
-        hash += `_${prop}:${props[prop]}`;
-      }
-    }
-    return hash;
-  }
-
-  private _invalidateStyleCache(): void {
-    this._styleCacheVersion++;
-    this._styleCache.clear();
-  }
-
-  private _cleanupStyleCache(): void {
-    if (this._styleCache.size >= MVTSource.MAX_STYLE_CACHE_SIZE) {
-      const entries = Array.from(this._styleCache.entries());
-      const keepCount = Math.floor(MVTSource.MAX_STYLE_CACHE_SIZE * 0.7);
-
-      this._styleCache.clear();
-      entries.slice(-keepCount).forEach(([key, value]) => {
-        this._styleCache.set(key, value);
-      });
+      this._deferredTimers.add(timer);
     }
   }
 
@@ -1652,59 +1333,7 @@ export class MVTSource implements google.maps.MapType {
    * Get current style for feature with selection/hover state
    */
   getStyleForFeature(feature: VectorTileFeature, featureId: string | number): FeatureStyle {
-    const isSelected = this._selectedFeatureIds.has(featureId);
-    const isHovered = this._hoveredFeatureIds.has(featureId);
-    const baseStyle = typeof this.style === 'function' ? this.style(feature) : this.style;
-
-    // Fast path: static style with no state changes
-    if (typeof this.style !== 'function' && !isSelected && !isHovered) {
-      return baseStyle;
-    }
-
-    // Fast path: only use cache if we have significant load (>100 features or function styles)
-    const shouldUseCache = typeof this.style === 'function' || this._featureIndex.size > 100;
-
-    if (shouldUseCache) {
-      const cacheKey = this._getStyleCacheKey(feature, featureId);
-      const cachedStyle = this._styleCache.get(cacheKey);
-      if (cachedStyle) {
-        return cachedStyle;
-      }
-    }
-
-    let resultStyle = { ...baseStyle };
-    delete resultStyle.selected;
-    delete resultStyle.hover;
-
-    if (isSelected && baseStyle.selected) {
-      resultStyle = { ...resultStyle, ...baseStyle.selected };
-    } else if (isHovered && baseStyle.hover) {
-      resultStyle = { ...resultStyle, ...baseStyle.hover };
-    } else if (isSelected && !baseStyle.selected) {
-      const computedSelectedStyle = this.getSelectedStyle(feature);
-      resultStyle = {
-        ...resultStyle,
-        ...(!resultStyle.fillStyle || resultStyle.fillStyle === 'transparent'
-          ? { fillStyle: computedSelectedStyle.fillStyle }
-          : {}),
-        ...(!resultStyle.strokeStyle ? { strokeStyle: computedSelectedStyle.strokeStyle } : {}),
-        ...(!resultStyle.lineWidth ? { lineWidth: computedSelectedStyle.lineWidth } : {}),
-      };
-    } else if (isHovered && !baseStyle.hover) {
-      if (resultStyle.fillStyle && !resultStyle.fillStyle.includes('rgba(')) {
-        const hoverFill = resultStyle.fillStyle.replace('0.3', '0.5').replace('0.4', '0.6');
-        if (hoverFill !== resultStyle.fillStyle) {
-          resultStyle.fillStyle = hoverFill;
-        }
-      }
-    }
-
-    if (shouldUseCache) {
-      this._cleanupStyleCache();
-      this._styleCache.set(this._getStyleCacheKey(feature, featureId), resultStyle);
-    }
-
-    return resultStyle;
+    return this._styleResolver.resolve(feature, featureId);
   }
 
   /**
@@ -1722,8 +1351,8 @@ export class MVTSource implements google.maps.MapType {
     this._url = url;
 
     // Abort requests aimed at the old URL before they can land as new tiles.
-    this._tileRequests.forEach((controller) => controller.abort());
-    this._tileRequests.clear();
+    this._tileLoader.setUrl(url);
+    this._tileLoader.abortAll();
 
     this._resetMVTLayers();
 
@@ -1759,22 +1388,21 @@ export class MVTSource implements google.maps.MapType {
    * Set tile availability manifest
    */
   async setTileAvailabilityManifest(manifest?: TileAvailabilitySource): Promise<void> {
-    this._tileAvailabilityManifest = manifest;
-    await this._initializeManifest();
+    await this._tileLoader.setManifest(manifest);
   }
 
   /**
    * Get current resolved manifest
    */
   getTileAvailabilityManifest(): TileManifest | undefined {
-    return this._resolvedManifest;
+    return this._tileLoader.getManifest();
   }
 
   /**
    * Refresh manifest (useful for function-based manifests)
    */
   async refreshManifest(): Promise<void> {
-    await this._initializeManifest();
+    await this._tileLoader.initializeManifest();
   }
 
   /**
@@ -1924,7 +1552,7 @@ export class MVTSource implements google.maps.MapType {
     let selectedStyle = baseStyle.selected || {};
 
     if (!baseStyle.selected) {
-      selectedStyle = this.getSelectedStyle({ type: 3, properties: {} } as any);
+      selectedStyle = StyleResolver.selectedStyleFor({ type: 3, properties: {} } as any);
     }
 
     return {
@@ -1988,9 +1616,10 @@ export class MVTSource implements google.maps.MapType {
         // Convert PBF coordinates to geographic coordinates
         const tileContext = this._visibleTiles[tileId];
         if (tileContext) {
-          const convertedCoords = this._convertPBFCoordinatesToGeoJSON(
+          const convertedCoords = this._geometryMerger.convertPBFCoordinatesToGeoJSON(
             coordinates,
-            tileContext,
+            this.getTileObject(tileContext.id),
+            tileContext.tileSize,
             tileData.divisor,
             vectorFeature.type,
           );
@@ -2018,7 +1647,7 @@ export class MVTSource implements google.maps.MapType {
     );
 
     // Merge connecting rings into optimal polygon/multipolygon structure
-    const mergedGeometry = this._mergeConnectingRings(allCoordinateRings);
+    const mergedGeometry = this._geometryMerger.mergeConnectingRings(allCoordinateRings);
 
     return {
       type: 'Feature',
@@ -2026,363 +1655,6 @@ export class MVTSource implements google.maps.MapType {
       properties,
       geometry: mergedGeometry,
     };
-  }
-
-  /**
-   * Merge connecting coordinate rings into optimal polygon/multipolygon geometry
-   */
-  private _mergeConnectingRings(rings: number[][][]): {
-    type: 'Polygon' | 'MultiPolygon';
-    coordinates: number[][][] | number[][][][];
-  } {
-    if (rings.length === 0) {
-      return { type: 'Polygon', coordinates: [] };
-    }
-
-    if (rings.length === 1) {
-      return { type: 'Polygon', coordinates: rings };
-    }
-
-    this.logger.log(`Starting polygon merge for ${rings.length} rings`);
-
-    try {
-      // Convert rings to individual polygon features
-      const polygons = rings.map((ring, index) => {
-        // Ensure the ring is closed
-        const closedRing = this._ensureRingClosure(ring);
-        return polygon([closedRing], { originalIndex: index });
-      });
-
-      // Group polygons that touch or overlap
-      const polygonGroups = this._groupTouchingPolygons(polygons);
-
-      this.logger.log(`Grouped ${polygons.length} polygons into ${polygonGroups.length} groups`);
-
-      // Merge each group and collect results
-      const mergedPolygons: Feature<Polygon | MultiPolygon>[] = [];
-
-      for (const group of polygonGroups) {
-        if (group.length === 1) {
-          // Single polygon, no merging needed
-          mergedPolygons.push(group[0]);
-        } else {
-          // Merge touching polygons using union operation
-          const merged = this._unionPolygons(group);
-          if (merged) {
-            mergedPolygons.push(merged);
-          } else {
-            // Fallback: keep original polygons if union failed
-            mergedPolygons.push(...group);
-          }
-        }
-      }
-
-      // Convert back to GeoJSON geometry format
-      const result = this._convertTurfPolygonsToGeometry(mergedPolygons);
-
-      this.logger.log(`Merged ${rings.length} rings into ${result.type} with ${mergedPolygons.length} polygon groups`);
-      return result;
-    } catch (error) {
-      this.logger.error('Error in polygon merging, falling back to simple approach:', error);
-      // Fallback to original simple approach - return as single polygon
-      rings.sort((a, b) => this._calculateRingArea(b) - this._calculateRingArea(a));
-      return { type: 'Polygon', coordinates: rings };
-    }
-  }
-
-  /**
-   * Calculate the area of a ring (simplified)
-   */
-  private _calculateRingArea(ring: number[][]): number {
-    if (ring.length < 3) return 0;
-
-    let area = 0;
-    for (let i = 0; i < ring.length - 1; i++) {
-      const [x1, y1] = ring[i];
-      const [x2, y2] = ring[i + 1];
-      area += x1 * y2 - x2 * y1;
-    }
-    return Math.abs(area / 2);
-  }
-
-  /**
-   * Ensure a ring is properly closed (first point equals last point)
-   */
-  private _ensureRingClosure(ring: number[][]): number[][] {
-    if (ring.length < 3) return ring;
-
-    const firstPoint = ring[0];
-    const lastPoint = ring[ring.length - 1];
-
-    // Check if the ring is already closed
-    if (firstPoint[0] === lastPoint[0] && firstPoint[1] === lastPoint[1]) {
-      return ring;
-    }
-
-    // Close the ring by adding the first point at the end
-    return [...ring, firstPoint];
-  }
-
-  /**
-   * Group polygons that touch or overlap using Union-Find algorithm
-   */
-  private _groupTouchingPolygons(polygons: Feature<Polygon>[]): Feature<Polygon>[][] {
-    if (polygons.length <= 1) return [polygons];
-
-    // Cache coordinate extraction for performance
-    const polygonCoords = polygons.map((poly) => this._getAllCoordinates(poly));
-
-    // Union-Find data structure for efficient grouping
-    const parent = Array.from({ length: polygons.length }, (_, i) => i);
-
-    const find = (x: number): number => {
-      if (parent[x] !== x) {
-        parent[x] = find(parent[x]); // Path compression
-      }
-      return parent[x];
-    };
-
-    const union = (x: number, y: number): void => {
-      const rootX = find(x);
-      const rootY = find(y);
-      if (rootX !== rootY) {
-        parent[rootX] = rootY;
-      }
-    };
-
-    // Build adjacency using cached coordinates - O(n²) instead of O(n³)
-    for (let i = 0; i < polygons.length; i++) {
-      for (let j = i + 1; j < polygons.length; j++) {
-        if (this._polygonsTouchOrOverlap(polygons[i], polygons[j], polygonCoords[i], polygonCoords[j])) {
-          union(i, j);
-        }
-      }
-    }
-
-    // Group polygons by their root parent
-    const groups = new Map<number, Feature<Polygon>[]>();
-    for (let i = 0; i < polygons.length; i++) {
-      const root = find(i);
-      if (!groups.has(root)) {
-        groups.set(root, []);
-      }
-      groups.get(root)!.push(polygons[i]);
-    }
-
-    return Array.from(groups.values());
-  }
-
-  /**
-   * Check if two polygons touch or overlap (including point-touching)
-   */
-  private _polygonsTouchOrOverlap(
-    poly1: Feature<Polygon>,
-    poly2: Feature<Polygon>,
-    coords1: number[][],
-    coords2: number[][],
-  ): boolean {
-    try {
-      // Method 1: Direct coordinate comparison using pre-extracted coordinates
-      if (this._hasSharedCoordinates(coords1, coords2)) {
-        return true;
-      }
-
-      // Method 2: Geometric intersection for overlapping cases
-      const intersection = intersect(poly1, poly2);
-      return intersection !== null && intersection !== undefined;
-    } catch (error) {
-      this.logger.warn("Error checking polygon overlap, assuming they don't touch:", error);
-      return false;
-    }
-  }
-
-  /**
-   * Check if two polygons share any exact coordinates using pre-extracted coordinates
-   */
-  private _hasSharedCoordinates(coords1: number[][], coords2: number[][]): boolean {
-    try {
-      // Create a Set of coordinate strings for O(1) lookup
-      const coordSet1 = new Set<string>();
-      for (const coord of coords1) {
-        coordSet1.add(`${coord[0]},${coord[1]}`);
-      }
-
-      // Check if any coordinate from coords2 matches coords1
-      for (const coord of coords2) {
-        if (coordSet1.has(`${coord[0]},${coord[1]}`)) {
-          return true;
-        }
-      }
-
-      return false;
-    } catch (error) {
-      this.logger.warn('Error checking shared coordinates:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Extract all coordinates from a polygon
-   */
-  private _getAllCoordinates(polygonFeature: Feature<Polygon>): number[][] {
-    const coordinates: number[][] = [];
-
-    try {
-      if (polygonFeature.geometry && polygonFeature.geometry.coordinates) {
-        const rings = polygonFeature.geometry.coordinates;
-
-        for (const ring of rings) {
-          for (const coord of ring) {
-            coordinates.push([coord[0], coord[1]]);
-          }
-        }
-      }
-    } catch (error) {
-      this.logger.warn('Error extracting coordinates:', error);
-    }
-
-    return coordinates;
-  }
-
-  /**
-   * Union multiple polygons into a single polygon or multipolygon
-   */
-  private _unionPolygons(polygons: Feature<Polygon>[]): Feature<Polygon | MultiPolygon> | null {
-    // Early returns for performance
-    if (polygons.length === 0) return null;
-    if (polygons.length === 1) return polygons[0];
-
-    try {
-      // Reduce approach for cleaner code
-      return polygons.slice(1).reduce<Feature<Polygon | MultiPolygon, Properties>>((result, currentPolygon, index) => {
-        const unionResult = union(result, currentPolygon);
-        if (!unionResult) {
-          this.logger.warn(`Failed to union polygon ${index}, keeping separate`);
-          return result; // Keep previous result instead of failing completely
-        }
-
-        return unionResult;
-      }, polygons[0]);
-    } catch (error) {
-      this.logger.error('Error in polygon union operation:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Convert Turf.js polygon features back to proper GeoJSON geometry
-   */
-  private _convertTurfPolygonsToGeometry(polygons: Feature<Polygon | MultiPolygon>[]): {
-    type: 'Polygon' | 'MultiPolygon';
-    coordinates: number[][][] | number[][][][];
-  } {
-    // Early returns for performance
-    if (polygons.length === 0) {
-      return { type: 'Polygon', coordinates: [] };
-    }
-
-    if (polygons.length === 1) {
-      // Single result - return as-is with proper typing
-      const { geometry } = polygons[0];
-      return {
-        type: geometry.type as 'Polygon' | 'MultiPolygon',
-        coordinates: geometry.coordinates as number[][][] | number[][][][],
-      };
-    }
-
-    // Multiple polygons - efficiently build MultiPolygon
-    const multiPolygonCoords: number[][][][] = [];
-
-    for (const { geometry } of polygons) {
-      if (geometry.type === 'Polygon') {
-        multiPolygonCoords.push(geometry.coordinates);
-      } else {
-        // Flatten MultiPolygon components
-        multiPolygonCoords.push(...geometry.coordinates);
-      }
-    }
-
-    return {
-      type: 'MultiPolygon',
-      coordinates: multiPolygonCoords,
-    };
-  }
-
-  /**
-   * Convert PBF coordinates to GeoJSON geographic coordinates
-   */
-  private _convertPBFCoordinatesToGeoJSON(
-    pbfCoordinates: any[],
-    tileContext: TileContext,
-    divisor: number,
-    geometryType: number,
-  ): number[][] | number[][][] | null {
-    const tileCoord = this.getTileObject(tileContext.id);
-    const z = tileCoord.z;
-    const x = tileCoord.x;
-    const y = tileCoord.y;
-    const tileSize = tileContext.tileSize;
-
-    this.logger.log(
-      `Converting coordinates for tile ${z}/${x}/${y}, divisor: ${divisor}, tileSize: ${tileSize}, geometryType: ${geometryType}`,
-    );
-
-    try {
-      const convertPoint = (point: any): [number, number] => {
-        // Convert from PBF extent coordinates to tile pixel coordinates
-        const pixelX = point.x / divisor;
-        const pixelY = point.y / divisor;
-
-        // Convert to tile-relative coordinates (0-1)
-        const tileX = pixelX / tileSize;
-        const tileY = pixelY / tileSize;
-
-        // Convert to global tile coordinates
-        const globalX = x + tileX;
-        const globalY = y + tileY;
-
-        // Convert to geographic coordinates using Web Mercator projection
-        const tileCount = 1 << z; // Faster than Math.pow(2, z)
-        const lon = (globalX / tileCount) * 360 - 180;
-        const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * globalY) / tileCount))) * 180) / Math.PI;
-
-        return [lon, lat]; // GeoJSON format: [longitude, latitude]
-      };
-
-      if (geometryType === 1) {
-        // Point
-        // For points, pbfCoordinates is array of point groups
-        const result = pbfCoordinates.map((pointGroup) => {
-          if (Array.isArray(pointGroup) && pointGroup.length > 0) {
-            return convertPoint(pointGroup[0]);
-          }
-          return convertPoint(pointGroup);
-        });
-        this.logger.log(`Converted ${result.length} points`);
-        return result;
-      } else if (geometryType === 2) {
-        // LineString
-        // For linestrings, pbfCoordinates is array of line parts
-        const result = pbfCoordinates.map((lineString) => lineString.map(convertPoint));
-        this.logger.log(`Converted ${result.length} linestrings with ${result.map((ls) => ls.length)} points each`);
-        return result;
-      } else if (geometryType === 3) {
-        // Polygon
-        // For polygons, pbfCoordinates is array of rings
-        const result = pbfCoordinates.map((ring) => ring.map(convertPoint));
-        this.logger.log(`Converted polygon with ${result.length} rings, ring sizes: ${result.map((r) => r.length)}`);
-        return result;
-      }
-    } catch (error) {
-      this.logger.error('Error converting PBF coordinates to GeoJSON:', error, {
-        tileId: tileContext.id,
-        geometryType,
-        coordinatesLength: pbfCoordinates.length,
-        firstCoord: pbfCoordinates[0],
-      });
-    }
-
-    return null;
   }
 
   /**
@@ -2502,12 +1774,9 @@ export class MVTSource implements google.maps.MapType {
     // Abort every in-flight tile fetch. These were previously left running,
     // and a late response re-created mVTLayers entries and re-populated
     // _tilesDrawn, half-reviving a torn-down source.
-    this._tileRequests.forEach((controller) => controller.abort());
-    this._tileRequests.clear();
+    this._tileLoader.abortAll();
 
     // Cancel every timer. Only _redrawDebounceTimer used to be cleared.
-    this._retryTimers.forEach(clearTimeout);
-    this._retryTimers.clear();
     this._tileLoadedTimers.forEach(clearTimeout);
     this._tileLoadedTimers.clear();
     this._deferredTimers.forEach(clearTimeout);
@@ -2516,10 +1785,7 @@ export class MVTSource implements google.maps.MapType {
       clearTimeout(this._hoverTimer);
       this._hoverTimer = null;
     }
-    if (this._redrawDebounceTimer) {
-      clearTimeout(this._redrawDebounceTimer);
-      this._redrawDebounceTimer = null;
-    }
+    this._redraws.dispose();
 
     // Deselect before dropping the overlays it needs to clean up.
     this.deselectAllFeatures();
@@ -2580,8 +1846,7 @@ export class MVTSource implements google.maps.MapType {
     this._loadedTileIds.clear();
     this.loadedTilesLen = 0;
 
-    this._styleCache.clear();
-    this._pendingRedraws.clear();
+    this._styleResolver.clear();
 
     this.logger.log('MVTSource disposal complete');
   }
