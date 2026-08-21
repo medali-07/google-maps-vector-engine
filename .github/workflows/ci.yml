@@ -80,5 +80,23 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Bundle size budget
+        run: npm run size
+
+      - name: Validate published package
+        run: npx publint
+
+      - name: Validate published types
+        run: npx @arethetypeswrong/cli --pack
+
       - name: Verify package contents
         run: npm pack --dry-run
+
+      - name: Smoke test the published tarball
+        run: |
+          npm pack
+          mkdir -p /tmp/smoke && cd /tmp/smoke
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE"/google-maps-vector-engine-*.tgz
+          node -e "const m=require('google-maps-vector-engine'); if(typeof m.MVTSource!=='function') throw new Error('CJS require broken'); console.log('CJS ok')"
+          node --input-type=module -e "import('google-maps-vector-engine').then(m=>{if(typeof m.MVTSource!=='function')throw new Error('ESM import broken');console.log('ESM ok')})"

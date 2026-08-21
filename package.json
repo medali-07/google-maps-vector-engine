@@ -1,22 +1,36 @@
 {
   "name": "google-maps-vector-engine",
   "version": "0.2.0",
+  "type": "commonjs",
   "description": "High-performance TypeScript engine for rendering Mapbox Vector Tiles (MVT/PBF) on Google Maps with advanced features including fast feature lookups, interactive selections, dynamic styling, and optimized rendering.",
   "main": "dist/index.js",
-  "module": "dist/esm/index.js",
+  "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
+    "docs",
     "README.md",
+    "MIGRATION.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "npm run build:cjs && npm run build:esm && npm run build:types",
-    "build:cjs": "tsc --project tsconfig.json",
-    "build:esm": "tsc --project tsconfig.esm.json",
-    "build:types": "tsc --project tsconfig.types.json",
+    "build": "npm run clean && tsup",
     "clean": "rimraf dist",
-    "prepublishOnly": "npm run clean && npm run build",
+    "prepublishOnly": "npm run check && npm test && npm run build",
     "test": "jest",
     "test:unit": "jest tests/unit",
     "test:performance": "jest --config=jest.performance.config.js",
@@ -33,7 +47,8 @@
     "format": "prettier --write \"**/*.{ts,js,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check"
+    "check": "npm run typecheck && npm run lint && npm run format:check",
+    "size": "size-limit"
   },
   "keywords": [
     "google-maps",
@@ -61,11 +76,13 @@
   },
   "dependencies": {
     "@mapbox/vector-tile": "^2.0.4",
-    "@turf/turf": "^7.2.0",
+    "@turf/intersect": "^7.4.0",
+    "@turf/union": "^7.4.0",
     "pbf": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
+    "@size-limit/preset-small-lib": "^11.2.0",
     "@testing-library/jest-dom": "^5.16.0",
     "@types/google.maps": "^3.58.1",
     "@types/jest": "^29.0.0",
@@ -79,7 +96,9 @@
     "jest-environment-jsdom": "^29.0.0",
     "prettier": "3.6.2",
     "rimraf": "^5.0.0",
+    "size-limit": "^11.2.0",
     "ts-jest": "^29.0.0",
+    "tsup": "^8.5.1",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.44.0"
   },
@@ -99,5 +118,25 @@
   ],
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "unpkg": "dist/google-maps-vector-engine.min.js",
+  "jsdelivr": "dist/google-maps-vector-engine.min.js",
+  "peerDependenciesMeta": {
+    "@types/google.maps": {
+      "optional": true
+    }
+  },
+  "size-limit": [
+    {
+      "name": "ESM entry (tree-shaken, deps external)",
+      "path": "dist/index.mjs",
+      "import": "{ MVTSource }",
+      "limit": "34 kB"
+    },
+    {
+      "name": "CDN bundle (everything inlined)",
+      "path": "dist/google-maps-vector-engine.min.js",
+      "limit": "36 kB"
+    }
+  ]
 }

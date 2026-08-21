@@ -27,14 +27,15 @@ module.exports = {
 
   // Ratchet, not an aspiration. These are pinned just under the measured
   // baseline so coverage cannot regress, and are raised as tests land.
-  // Phase 6 target is 85/85/80. Raised after the Phase 4 API work:
-  // statements 60.56, branches 51.62, functions 60.16, lines 60.86.
+  // Phase 6 target is 85/85/80. Raised after the Phase 5 packaging work,
+  // which brought the GeoJSON merge subsystem under test:
+  // statements 65.41, branches 54.93, functions 63.90, lines 65.85.
   coverageThreshold: {
     global: {
-      branches: 51,
-      functions: 60,
-      lines: 60,
-      statements: 60,
+      branches: 54,
+      functions: 63,
+      lines: 65,
+      statements: 65,
     },
   },
 

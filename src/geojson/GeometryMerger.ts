@@ -1,8 +1,35 @@
-// @ts-expect-error - Turf 7 removed the `Properties` export; the whole import is
-// replaced by granular @turf/union + @turf/intersect packages in Phase 5.
-import { polygon, intersect, union, Feature, Polygon, MultiPolygon, Properties } from '@turf/turf';
+import intersect from '@turf/intersect';
+import union from '@turf/union';
+import type { Feature, FeatureCollection, MultiPolygon, Polygon, Position } from 'geojson';
 import { createLogger } from '../DebugLogger';
 import { TileCoord } from '../types';
+
+/**
+ * Build a GeoJSON polygon feature.
+ *
+ * Inlined rather than importing `@turf/helpers`: this is the whole of what
+ * `polygon()` did for us, and the package it lives in is not otherwise used.
+ */
+function polygonFeature(rings: Position[][], properties: Record<string, unknown> = {}): Feature<Polygon> {
+  return {
+    type: 'Feature',
+    properties,
+    geometry: { type: 'Polygon', coordinates: rings },
+  };
+}
+
+/**
+ * Wrap features for the Turf 7 API.
+ *
+ * Turf 7 changed `union` and `intersect` to take a FeatureCollection rather
+ * than two positional features. The old two-argument calls were still in place
+ * here and threw "Must have at least 2 geometries" on every invocation - but
+ * both call sites catch and continue, so the failure was silent: polygons that
+ * overlapped without sharing an exact coordinate simply never merged.
+ */
+function pair<T extends Polygon | MultiPolygon>(a: Feature<T>, b: Feature<T>): FeatureCollection<T> {
+  return { type: 'FeatureCollection', features: [a, b] };
+}
 
 /** A merged polygonal geometry in GeoJSON form. */
 export interface MergedGeometry {
@@ -38,7 +65,7 @@ export class GeometryMerger {
     try {
       const polygons = rings.map((ring, index) => {
         const closedRing = this.ensureRingClosure(ring);
-        return polygon([closedRing], { originalIndex: index });
+        return polygonFeature([closedRing], { originalIndex: index });
       });
 
       const polygonGroups = this._groupTouchingPolygons(polygons);
@@ -230,7 +257,7 @@ export class GeometryMerger {
         return true;
       }
 
-      const intersection = intersect(poly1, poly2);
+      const intersection = intersect(pair(poly1, poly2));
       return intersection !== null && intersection !== undefined;
     } catch (error) {
       this.logger.warn("Error checking polygon overlap, assuming they don't touch:", error);
@@ -287,8 +314,8 @@ export class GeometryMerger {
     if (polygons.length === 1) return polygons[0];
 
     try {
-      return polygons.slice(1).reduce<Feature<Polygon | MultiPolygon, Properties>>((result, currentPolygon, index) => {
-        const unionResult = union(result, currentPolygon);
+      return polygons.slice(1).reduce<Feature<Polygon | MultiPolygon>>((result, currentPolygon, index) => {
+        const unionResult = union(pair(result, currentPolygon));
         if (!unionResult) {
           this.logger.warn(`Failed to union polygon ${index}, keeping separate`);
           return result;

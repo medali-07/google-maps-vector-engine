@@ -78,15 +78,6 @@ export default tseslint.config(
     },
   },
 
-  // Ambient module declarations.
-  {
-    files: ['src/types/**/*.d.ts'],
-    rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-unsafe-declaration-merging': 'off',
-    },
-  },
-
   // Tests.
   {
     files: ['tests/**/*.ts'],
