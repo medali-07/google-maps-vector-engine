@@ -73,9 +73,9 @@ function cleanup() {
 ### Country Selection
 
 ```typescript
-import { MVTFactory } from 'google-maps-vector-engine';
-
-const config = MVTFactory.createAdministrativeConfig('https://boundaries.example.com', 'countries', {
+const config = {
+  url: 'https://boundaries.example.com/countries/{z}/{x}/{y}.pbf',
+  visibleLayers: ['countries'],
   setSelectedOnClick: true,
   multipleSelection: false,
 
@@ -94,7 +94,7 @@ const config = MVTFactory.createAdministrativeConfig('https://boundaries.example
       lineWidth: 3,
     },
   },
-});
+};
 
 const countrySource = new MVTSource(map, config);
 
@@ -276,7 +276,7 @@ class FeatureSearch {
   }
 
   selectResult(featureId: string) {
-    this.mvtSource.setSelectedFeatures([featureId]);
+    this.mvtSource.setSelection([featureId]);
   }
 }
 ```
@@ -350,7 +350,7 @@ export function useVectorTiles(map: google.maps.Map | null, url: string, options
   }, [map, url]);
 
   const updateSelection = (ids: string[]) => {
-    mvtSourceRef.current?.setSelectedFeatures(ids);
+    mvtSourceRef.current?.setSelection(ids);
     setSelectedFeatures(ids);
   };
 

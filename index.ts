@@ -34,11 +34,29 @@ export type {
   // Event types
   MVTMouseEvent,
   MouseEventOptions,
+  MVTSourceEvents,
+  ClickEventCallback,
+  HoverEventCallback,
+
+  // Tile types
+  TileContext,
+  TileFeatureData,
+  CanvasAndFeatures,
+
+  // Feature types
+  FeatureProperties,
+  GeoJSONFeature,
+  GeoJSONPosition,
+  GeoJSONCoordinates,
+  FeatureReplacementFunction,
+  FeatureSelectionCallback,
 
   // Configuration types
   MVTSourceOptions,
   MVTLayerOptions,
   MVTFeatureOptions,
+  SelectionOptions,
+  MVTSourceStats,
 
   // Manifest types
   TileManifest,
@@ -49,6 +67,9 @@ export type {
   FilterFunction,
   IDExtractorFunction,
 } from './src/types';
+
+// Errors thrown by the constructor when an option is missing or unusable.
+export { MVTError, MVTOptionsError } from './src/errors';
 
 export { GeometryType } from './src/types';
 
@@ -310,91 +331,12 @@ export const MVTUtils = {
         : DefaultStyles.basic();
     };
   },
-
-  /**
-   * Performance monitoring utilities
-   */
-  performance: {
-    /**
-     * Get basic performance metrics from an MVT source
-     */
-    getMetrics: (mvtSource: any) => {
-      const tiles = Object.keys(mvtSource.mVTLayers).length;
-      const selectedFeatures = mvtSource.getSelectedFeatureIds?.().length || 0;
-      return {
-        tilesLoaded: mvtSource.loadedTilesLen || 0,
-        layersVisible: tiles,
-        featuresSelected: selectedFeatures,
-        debugEnabled: mvtSource.options?.debug || false,
-      };
-    },
-
-    /**
-     * Measure time taken for feature selection
-     */
-    measureSelectionTime: (mvtSource: any, featureIds: (string | number)[]) => {
-      const start = performance.now();
-      mvtSource.setSelectedFeatures?.(featureIds);
-      const end = performance.now();
-      return end - start;
-    },
-
-    /**
-     * Benchmark feature lookup performance
-     */
-    benchmarkFeatureLookup: (mvtSource: any, sampleSize: number = 100) => {
-      const selectedIds = mvtSource.getSelectedFeatureIds?.() || [];
-      if (selectedIds.length === 0) return 0;
-
-      const start = performance.now();
-      for (let i = 0; i < sampleSize; i++) {
-        const randomId = selectedIds[Math.floor(Math.random() * selectedIds.length)];
-        mvtSource.getFeature?.(randomId);
-      }
-      const end = performance.now();
-      return (end - start) / sampleSize; // Average time per lookup
-    },
-  },
 };
 
 /**
  * Factory functions for common configurations
  */
 export const MVTFactory = {
-  /**
-   * Create configuration for administrative boundaries
-   */
-  createAdministrativeConfig: (
-    baseUrl: string,
-    type: 'communes' | 'departments' | 'iris' | 'postal_code',
-    options: Partial<import('./src/types').MVTSourceOptions> = {},
-  ): import('./src/types').MVTSourceOptions => {
-    const layerMap = {
-      communes: 'communes',
-      departments: 'departments',
-      iris: 'iris',
-      postal_code: 'postal_code',
-    };
-
-    return {
-      url: `${baseUrl.replace(/\/$/, '')}/${type}/{z}/{x}/{y}.pbf`,
-      visibleLayers: [layerMap[type]],
-      style: {
-        fillStyle: 'rgba(70, 130, 180, 0.3)',
-        strokeStyle: 'rgba(70, 130, 180, 0.8)',
-        lineWidth: 1,
-        selected: DefaultStyles.selected.polygon(),
-        hover: {
-          fillStyle: 'rgba(70, 130, 180, 0.5)',
-          lineWidth: 2,
-        },
-      },
-      setSelectedOnClick: true,
-      cache: true,
-      ...options,
-    };
-  },
-
   /**
    * Create high-performance configuration
    */

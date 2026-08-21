@@ -156,20 +156,23 @@ const manifestFetcher = ManifestUtils.createManifestFetcher('https://api.example
 ## Performance Monitoring
 
 ```typescript
-import { MVTUtils } from 'google-maps-vector-engine';
-
-// Get metrics
-const metrics = MVTUtils.performance.getMetrics(mvtSource);
+const stats = mvtSource.getStats();
 console.log('Performance:', {
-  tilesLoaded: metrics.tilesLoaded,
-  featuresSelected: metrics.featuresSelected,
-  averageRenderTime: metrics.averageRenderTime,
+  visibleTiles: stats.visibleTiles,
+  cachedTiles: stats.cachedTiles,
+  pendingRequests: stats.pendingRequests,
+  features: stats.features,
+  selectedFeatures: stats.selectedFeatures,
+  pixelRatio: stats.pixelRatio,
 });
 
-// Benchmark selection
-const time = MVTUtils.performance.measureSelectionTime(mvtSource, ['f1', 'f2']);
-console.log(`Selection: ${time}ms`);
+// Watch loading progress
+mvtSource.on('tileload', ({ tileId }) => console.log(`loaded ${tileId}`));
+mvtSource.on('idle', () => console.log(mvtSource.getStats()));
 ```
+
+`MVTUtils.performance` was removed in 1.0: it read `mvtSource.options?.debug`,
+a property that never existed, and a tile counter that was only ever zero.
 
 ## Best Practices Checklist
 
@@ -215,7 +218,7 @@ async function performanceTest() {
 
   // Test selection
   const selectionStart = performance.now();
-  mvtSource.setSelectedFeatures(['f1', 'f2', 'f3']);
+  mvtSource.setSelection(['f1', 'f2', 'f3']);
   const selectionTime = performance.now() - selectionStart;
 
   console.log('Performance:', {

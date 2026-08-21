@@ -177,7 +177,7 @@ describe('MVT Integration Performance Tests', () => {
       const featureIds = features.map((f) => f.featureId);
 
       const start = performance.now();
-      mvtSource.setSelectedFeatures(featureIds);
+      mvtSource.setSelection(featureIds);
       const selectionDuration = performance.now() - start;
 
       console.log(`⚡ Batch Selection (${featureCount}): ${selectionDuration.toFixed(2)}ms`);
@@ -318,7 +318,7 @@ describe('MVT Integration Performance Tests', () => {
 
       // Select some features to make disposal more complex
       const selectedIds = features.slice(0, 100).map((f) => f.featureId);
-      mvtSource.setSelectedFeatures(selectedIds);
+      mvtSource.setSelection(selectedIds);
 
       // Test individual feature disposal
       const singleDisposeStart = performance.now();

@@ -3,11 +3,40 @@
  */
 export class DebugLogger {
   private static instance: DebugLogger;
-  private debugEnabled: boolean = false;
-  private readonly COLORS = {
+
+  /**
+   * How many live sources have asked for debug output.
+   *
+   * A plain boolean meant that constructing a second source with
+   * `debug: false` called `setDebug(false)` and silently turned debugging off
+   * for the first one. Counting requests instead means debug stays on for as
+   * long as anything still wants it.
+   */
+  private _debugRequests = 0;
+
+  /** Set by `setDebug`, which remains available for direct callers. */
+  private _forced: boolean | null = null;
+
+  /**
+   * Browser consoles do not interpret ANSI escapes; they print them as
+   * literal `[36m` garbage in front of every message. They do understand
+   * `%c` with a CSS string, so colour is expressed that way there and with
+   * ANSI only in a real terminal.
+   */
+  private readonly _useAnsi = typeof window === 'undefined' && typeof document === 'undefined';
+
+  private readonly CSS = {
+    RED: 'color:#D55E00',
+    GREEN: 'color:#009E73',
+    YELLOW: 'color:#E69F00',
+    BLUE: 'color:#0072B2',
+    MAGENTA: 'color:#CC79A7;font-weight:bold',
+    CYAN: 'color:#56B4E9',
+    WHITE: '',
+  };
+
+  private readonly ANSI = {
     RESET: '\x1b[0m',
-    BRIGHT: '\x1b[1m',
-    DIM: '\x1b[2m',
     RED: '\x1b[31m',
     GREEN: '\x1b[32m',
     YELLOW: '\x1b[33m',
@@ -15,10 +44,26 @@ export class DebugLogger {
     MAGENTA: '\x1b[35m',
     CYAN: '\x1b[36m',
     WHITE: '\x1b[37m',
-    GRAY: '\x1b[90m',
   };
 
   private constructor() {}
+
+  private get debugEnabled(): boolean {
+    return this._forced ?? this._debugRequests > 0;
+  }
+
+  /**
+   * Format a label so it colours correctly in whichever console is listening.
+   *
+   * Returns the arguments to spread into a console call: either one
+   * ANSI-wrapped string, or a `%c` format string plus its CSS.
+   */
+  private _label(text: string, key: keyof typeof this.CSS): string[] {
+    if (this._useAnsi) {
+      return [`${this.ANSI[key]}${text}${this.ANSI.RESET}`];
+    }
+    return [`%c${text}`, this.CSS[key]];
+  }
 
   public static getInstance(): DebugLogger {
     if (!DebugLogger.instance) {
@@ -27,50 +72,80 @@ export class DebugLogger {
     return DebugLogger.instance;
   }
 
-  public setDebug(enabled: boolean): void {
-    this.debugEnabled = enabled;
-    if (enabled) {
-      this.group('🚀 MVT Debug Mode Enabled', () => {
-        this.info('Logger initialized with enhanced debugging features');
-        this.info('Available methods: log, info, warn, error, group, time, table');
-      });
-    }
+  /**
+   * Force debug output on or off, overriding what any source has requested.
+   *
+   * Pass `null` to hand control back to the per-source requests.
+   */
+  public setDebug(enabled: boolean | null): void {
+    this._forced = enabled;
+    if (this.debugEnabled) this._announce();
+  }
+
+  /**
+   * Register a source's interest in debug output.
+   *
+   * @returns A function that withdraws it again, called on dispose.
+   */
+  public requestDebug(): () => void {
+    const wasEnabled = this.debugEnabled;
+    this._debugRequests++;
+    if (!wasEnabled && this.debugEnabled) this._announce();
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this._debugRequests = Math.max(0, this._debugRequests - 1);
+    };
+  }
+
+  private _announce(): void {
+    this.group('MVT debug mode enabled', () => {
+      this.info('Available methods: log, info, warn, error, group, time, table');
+    });
   }
 
   public isDebugEnabled(): boolean {
     return this.debugEnabled;
   }
 
-  private formatMessage(level: string, color: string, ...args: any[]): any[] {
-    if (!this.debugEnabled && level !== 'error') return [];
-
+  private _write(
+    method: 'log' | 'info' | 'warn' | 'error',
+    level: string,
+    key: 'CYAN' | 'BLUE' | 'YELLOW' | 'RED',
+    ...args: unknown[]
+  ): void {
     const timestamp = new Date().toLocaleTimeString();
-    const prefix = `${color}[${timestamp}] ${level}${this.COLORS.RESET}`;
-
-    return [prefix, ...args];
+    console[method](...this._label(`[${timestamp}] ${level}`, key), ...args);
   }
 
-  public log(...args: any[]): void {
+  public log(...args: unknown[]): void {
     if (!this.debugEnabled) return;
-    const formatted = this.formatMessage('DEBUG', this.COLORS.CYAN, ...args);
-    if (formatted.length) console.log(...formatted);
+    this._write('log', 'DEBUG', 'CYAN', ...args);
   }
 
-  public info(...args: any[]): void {
+  public info(...args: unknown[]): void {
     if (!this.debugEnabled) return;
-    const formatted = this.formatMessage('INFO', this.COLORS.BLUE, ...args);
-    if (formatted.length) console.info(...formatted);
+    this._write('info', 'INFO', 'BLUE', ...args);
   }
 
-  public warn(...args: any[]): void {
+  public warn(...args: unknown[]): void {
     if (!this.debugEnabled) return;
-    const formatted = this.formatMessage('WARN', this.COLORS.YELLOW, ...args);
-    if (formatted.length) console.warn(...formatted);
+    this._write('warn', 'WARN', 'YELLOW', ...args);
   }
 
-  public error(...args: any[]): void {
-    const formatted = this.formatMessage('ERROR', this.COLORS.RED, ...args);
-    console.error(...formatted);
+  /**
+   * Report an error.
+   *
+   * Deliberately not gated on the debug flag: a failure a consumer has no
+   * other way of hearing about should not be silent just because debugging is
+   * off. Recoverable, expected conditions go through `warn` instead, and tile
+   * failures are also delivered as a `tileerror` event that can be handled
+   * rather than merely read in a console.
+   */
+  public error(...args: unknown[]): void {
+    this._write('error', 'ERROR', 'RED', ...args);
   }
 
   /**
@@ -79,7 +154,7 @@ export class DebugLogger {
   public group(label: string, callback?: () => void): void {
     if (!this.debugEnabled) return;
 
-    console.group(`${this.COLORS.BRIGHT}${this.COLORS.MAGENTA}📁 ${label}${this.COLORS.RESET}`);
+    console.group(...this._label(label, 'MAGENTA'));
     if (callback) {
       try {
         callback();
@@ -99,18 +174,20 @@ export class DebugLogger {
    */
   public time(label: string): void {
     if (!this.debugEnabled) return;
-    console.time(`${this.COLORS.GREEN}⏱️  ${label}${this.COLORS.RESET}`);
+    // console.time keys on the exact label, so it gets a plain one: a %c
+    // format string would make time and timeEnd disagree.
+    console.time(label);
   }
 
   public timeEnd(label: string): void {
     if (!this.debugEnabled) return;
-    console.timeEnd(`${this.COLORS.GREEN}⏱️  ${label}${this.COLORS.RESET}`);
+    console.timeEnd(label);
   }
 
   /**
    * Display data in table format
    */
-  public table(data: any, columns?: string[]): void {
+  public table(data: unknown, columns?: string[]): void {
     if (!this.debugEnabled) return;
     console.table(data, columns);
   }
@@ -119,34 +196,28 @@ export class DebugLogger {
    * Create an enhanced prefixed logger with performance monitoring
    */
   public createPrefixedLogger(prefix: string) {
-    const prefixColor = this.getComponentColor(prefix);
-    const coloredPrefix = `${prefixColor}[${prefix}]${this.COLORS.RESET}`;
+    const key = this.getComponentColor(prefix);
+    const label = (): string[] => this._label(`[${prefix}]`, key);
 
     return {
-      log: (...args: any[]) => {
-        if (this.debugEnabled) {
-          console.log(coloredPrefix, ...args);
-        }
+      log: (...args: unknown[]) => {
+        if (this.debugEnabled) console.log(...label(), ...args);
       },
-      info: (...args: any[]) => {
-        if (this.debugEnabled) {
-          console.info(coloredPrefix, ...args);
-        }
+      info: (...args: unknown[]) => {
+        if (this.debugEnabled) console.info(...label(), ...args);
       },
-      warn: (...args: any[]) => {
-        if (this.debugEnabled) {
-          console.warn(coloredPrefix, ...args);
-        }
+      warn: (...args: unknown[]) => {
+        if (this.debugEnabled) console.warn(...label(), ...args);
       },
-      error: (...args: any[]) => {
-        console.error(coloredPrefix, ...args);
+      error: (...args: unknown[]) => {
+        console.error(...label(), ...args);
       },
-      group: (label: string, callback?: () => void) => {
-        this.group(`${prefix}: ${label}`, callback);
+      group: (groupLabel: string, callback?: () => void) => {
+        this.group(`${prefix}: ${groupLabel}`, callback);
       },
-      time: (label: string) => this.time(`${prefix}: ${label}`),
-      timeEnd: (label: string) => this.timeEnd(`${prefix}: ${label}`),
-      table: (data: any, columns?: string[]) => this.table(data, columns),
+      time: (timeLabel: string) => this.time(`${prefix}: ${timeLabel}`),
+      timeEnd: (timeLabel: string) => this.timeEnd(`${prefix}: ${timeLabel}`),
+      table: (data: unknown, columns?: string[]) => this.table(data, columns),
       performance: {
         measureTileLoad: (tileId: string) => {
           this.time(`Tile Load: ${tileId}`);
@@ -163,16 +234,16 @@ export class DebugLogger {
   /**
    * Assign consistent colors to different components
    */
-  private getComponentColor(prefix: string): string {
-    const colorMap: { [key: string]: string } = {
-      MVTSource: this.COLORS.CYAN,
-      MVTLayer: this.COLORS.GREEN,
-      MVTFeature: this.COLORS.YELLOW,
-      Mercator: this.COLORS.BLUE,
-      ColorUtils: this.COLORS.MAGENTA,
+  private getComponentColor(prefix: string): keyof typeof this.CSS {
+    const colorMap: Record<string, keyof typeof this.CSS> = {
+      MVTSource: 'CYAN',
+      MVTLayer: 'GREEN',
+      MVTFeature: 'YELLOW',
+      Mercator: 'BLUE',
+      ColorUtils: 'MAGENTA',
     };
 
-    return colorMap[prefix] || this.COLORS.WHITE;
+    return colorMap[prefix] || 'WHITE';
   }
 }
 

@@ -18,8 +18,8 @@ describe('DebugLogger', () => {
     } else {
       delete process.env.NODE_ENV;
     }
-    // Reset debug mode
-    debugLogger.setDebug(false);
+    // Hand control back to per-source requests rather than forcing off.
+    debugLogger.setDebug(null);
   });
 
   describe('Basic Logging', () => {
@@ -29,6 +29,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('TestComponent'),
+        expect.any(String),
         expect.stringContaining('Test message'),
       );
     });
@@ -41,6 +42,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('TestComponent'),
+        expect.any(String),
         expect.stringContaining('Test message'),
         testData,
       );
@@ -54,6 +56,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringMatching(/\[.*TestComponent.*\]/),
+        expect.any(String),
         expect.stringContaining('Test message'),
       );
     });
@@ -68,10 +71,12 @@ describe('DebugLogger', () => {
       expect(consoleSpy).toHaveBeenCalledTimes(2);
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Component1'),
+        expect.any(String),
         expect.stringContaining('Message 1'),
       );
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Component2'),
+        expect.any(String),
         expect.stringContaining('Message 2'),
       );
     });
@@ -100,6 +105,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('TestComponent'),
+        expect.any(String),
         expect.stringContaining('Test environment message'),
       );
     });
@@ -153,6 +159,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('Component@#$%'),
+        expect.any(String),
         expect.stringContaining('Special characters test'),
       );
     });
@@ -188,7 +195,11 @@ describe('DebugLogger', () => {
         logger.log(longMessage);
       }).not.toThrow();
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('TestComponent'), longMessage);
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('TestComponent'),
+        expect.any(String),
+        longMessage,
+      );
     });
 
     test('should handle multiple data arguments', () => {
@@ -201,6 +212,7 @@ describe('DebugLogger', () => {
 
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining('TestComponent'),
+        expect.any(String),
         expect.stringContaining('Multiple data test'),
         data1,
         data2,

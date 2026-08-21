@@ -1,11 +1,14 @@
 import { VectorTileFeature } from '@mapbox/vector-tile';
 import { ColorUtils } from './ColorUtils';
 import { getTileContext2D, pixelRatioOf, toDevicePixels } from './render/TileCanvas';
+import type { MVTSource } from './MVTSource';
 import {
   MVTFeatureOptions,
   TileFeatureData,
   TileContext,
   FeatureStyle,
+  FeatureProperties,
+  asFeatureProperties,
   Point,
   GeometryType,
   CustomDrawFunction,
@@ -18,19 +21,21 @@ import {
  * Features include cached canvas contexts, efficient coordinate transformations,
  * and integrated selection/hover state management.
  */
-export class MVTFeature {
-  public mVTSource: any; // MVTSource
+export class MVTFeature<TProps extends object = FeatureProperties> {
+  public mVTSource: MVTSource<TProps>;
   public selected: boolean = false;
   public hovered: boolean = false;
   public featureId: string | number;
   public tiles: Record<string, TileFeatureData> = {};
   public style: FeatureStyle;
-  public type: number;
-  public properties: Record<string, any>;
+  /** Typed as the enum rather than a bare number, so the geometry switches
+   *  through this file get exhaustiveness checking. */
+  public type: GeometryType;
+  public properties: TProps;
 
   private _cachedPaths: Map<string, Point[][]> = new Map();
   private static readonly MAX_CACHE_SIZE = 50;
-  private _draw: CustomDrawFunction;
+  private _draw: CustomDrawFunction<TProps>;
 
   private _path2dVersion: number = 0;
 
@@ -38,13 +43,13 @@ export class MVTFeature {
    *  different device coordinates in each tile it spans. */
   private _geometryHashes: Map<string, string> = new Map();
 
-  constructor(options: MVTFeatureOptions) {
+  constructor(options: MVTFeatureOptions<TProps>) {
     this.mVTSource = options.mVTSource;
     this.selected = options.selected;
     this.featureId = options.featureId;
     this.style = options.style;
-    this.type = options.vectorTileFeature.type;
-    this.properties = options.vectorTileFeature.properties;
+    this.type = options.vectorTileFeature.type as GeometryType;
+    this.properties = asFeatureProperties<TProps>(options.vectorTileFeature.properties);
     this.addTileFeature(options.vectorTileFeature, options.tileContext);
     this._draw = options.customDraw || this.defaultDraw.bind(this);
 

@@ -10,6 +10,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
+    // Drop @internal members from the emitted .d.ts, so the public surface is
+    // what consumers actually see in IntelliSense.
+    "stripInternal": true,
     "declarationMap": true,
     "sourceMap": false,
     "removeComments": true,

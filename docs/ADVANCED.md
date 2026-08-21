@@ -213,12 +213,12 @@ class MVTSourceManager {
 
   addSource(mvtSource: MVTSource) {
     this.sources.push(mvtSource);
-    mvtSource.setSelectedFeatures(this.globalSelection);
+    mvtSource.setSelection(this.globalSelection);
   }
 
   setGlobalSelection(featureIds: string[]) {
     this.globalSelection = featureIds;
-    this.sources.forEach((source) => source.setSelectedFeatures(featureIds));
+    this.sources.forEach((source) => source.setSelection(featureIds));
   }
 
   dispose() {
@@ -290,7 +290,7 @@ function selectByCategory(category: string) {
     });
   });
 
-  mvtSource.setSelectedFeatures(matchingFeatures);
+  mvtSource.setSelection(matchingFeatures);
 }
 
 function updateStyleByProperty(propertyName: string, styles: Record<any, any>) {
@@ -368,8 +368,8 @@ class PerformanceMonitor {
     };
 
     // Monitor selection performance
-    const originalSetSelected = this.mvtSource.setSelectedFeatures.bind(this.mvtSource);
-    this.mvtSource.setSelectedFeatures = (ids) => {
+    const originalSetSelected = this.mvtSource.setSelection.bind(this.mvtSource);
+    this.mvtSource.setSelection = (ids) => {
       const start = performance.now();
       originalSetSelected(ids);
       this.metrics.selectionTimes.push(performance.now() - start);
