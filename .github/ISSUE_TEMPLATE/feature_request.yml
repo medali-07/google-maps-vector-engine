@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest something the library should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that is hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: What would the code look like if this existed?
+      render: typescript
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Including any workaround that currently works. If a workaround exists
+        and is adequate, say so — that is useful information.

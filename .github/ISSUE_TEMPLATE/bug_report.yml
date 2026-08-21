@@ -1,0 +1,63 @@
+name: Bug report
+description: Something renders wrong, throws, or leaks.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: `npm run build` and the demo in `examples/` are a quick
+        way to tell a library bug from an integration one.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: And what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        The smallest MVTSource configuration that shows it. A link to a fork of
+        `examples/index.html` is ideal. Please include the tile URL template, or
+        say if the tiles are private.
+      render: typescript
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      placeholder: 1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and OS
+      placeholder: Chrome 120 on macOS 14
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: >
+        Construct the source with `debug: true` and paste what it logs. If a
+        tile is failing, a `tileerror` listener reports the status.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I am on the latest version
+        - label: I searched existing issues
+        - label: My tile server returns `application/x-protobuf` (or similar) and the URL contains `{z}/{x}/{y}`

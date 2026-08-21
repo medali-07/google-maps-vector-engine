@@ -30,17 +30,14 @@ const mvtSource = new MVTSource(map, {
 ```typescript
 // Custom cache management
 class MemoryManagedMVTSource {
-  private tileCache = new Map();
-  private maxCacheSize = 100;
+  private readonly mvtSource: MVTSource;
+  private tileCache = new Map<string, unknown>();
 
-  constructor(map, options) {
-    this.mvtSource = new MVTSource(map, {
-      ...options,
-      cache: true,
-    });
+  constructor(map: google.maps.Map, options: MVTSourceOptions) {
+    this.mvtSource = new MVTSource(map, { ...options, cache: true });
   }
 
-  dispose() {
+  dispose(): void {
     this.mvtSource.dispose();
     this.tileCache.clear();
   }
@@ -72,28 +69,36 @@ const staticStyle = {
 };
 
 // ✅ Fast - pre-computed mapping
-const categoryStyles = {
+const categoryStyles: Record<string, FeatureStyle> = {
   residential: { fillStyle: 'rgba(255, 255, 0, 0.4)' },
   commercial: { fillStyle: 'rgba(255, 0, 255, 0.4)' },
 };
 
-const styleFunction = (feature) => {
-  return categoryStyles[feature.properties.category] || staticStyle;
+const styleFunction: FeatureStyleFunction = (feature) => {
+  return categoryStyles[String(feature.properties.category)] || staticStyle;
 };
 ```
 
 ### Avoid Complex Calculations
 
 ```typescript
-// ❌ Slow - complex calculations in style function
-style: (feature) => {
-  const area = calculateArea(feature.geometry); // Expensive!
-  const density = feature.properties.population / area;
+import type { FeatureStyle, FeatureStyleFunction } from 'google-maps-vector-engine';
+
+declare function calculateArea(feature: unknown): number;
+declare function generateComplexStyle(density: number): FeatureStyle;
+
+const redStyle: FeatureStyle = { fillStyle: 'rgba(213, 94, 0, 0.5)' };
+const blueStyle: FeatureStyle = { fillStyle: 'rgba(0, 114, 178, 0.3)' };
+
+// Slow: real work on every feature, on every redraw.
+const expensive: FeatureStyleFunction = (feature) => {
+  const area = calculateArea(feature);
+  const density = Number(feature.properties.population) / area;
   return generateComplexStyle(density);
 };
 
-// ✅ Fast - simple property lookup
-style: (feature) => {
+// Fast: a property lookup and a branch.
+const cheap: FeatureStyleFunction = (feature) => {
   return feature.properties.important ? redStyle : blueStyle;
 };
 ```
@@ -103,16 +108,18 @@ style: (feature) => {
 ### Zoom-Based Visibility
 
 ```typescript
+import type { MVTSource } from 'google-maps-vector-engine';
+
 class LayerManager {
-  constructor(map, mvtSource) {
+  constructor(map: google.maps.Map, mvtSource: MVTSource) {
     map.addListener('zoom_changed', () => {
-      const zoom = map.getZoom();
+      const zoom = map.getZoom() ?? 0;
       const layers = this.getLayersForZoom(zoom);
       mvtSource.setVisibleLayers(layers);
     });
   }
 
-  getLayersForZoom(zoom) {
+  getLayersForZoom(zoom: number): string[] {
     if (zoom < 6) return ['countries'];
     if (zoom < 10) return ['countries', 'states'];
     if (zoom < 14) return ['countries', 'states', 'cities'];

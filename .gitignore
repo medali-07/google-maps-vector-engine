@@ -54,3 +54,6 @@ temp/
 
 # Tarballs produced by `npm pack`, including the CI smoke test.
 *.tgz
+
+# Scratch directory used by the documentation snippet check.
+.docs-check/

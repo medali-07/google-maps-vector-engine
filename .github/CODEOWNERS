@@ -1,0 +1,12 @@
+# Every change is reviewed by the maintainer by default.
+*                       @medali-07
+
+# The published surface: changing any of these changes what consumers get.
+/index.ts               @medali-07
+/src/types.ts           @medali-07
+/package.json           @medali-07
+/MIGRATION.md           @medali-07
+
+# Build and release.
+/tsup.config.ts         @medali-07
+/.github/workflows/     @medali-07

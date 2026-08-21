@@ -6,7 +6,7 @@ Main controller class for rendering vector tiles.
 
 ### Constructor
 
-```typescript
+```
 new MVTSource(map: google.maps.Map, options: MVTSourceOptions)
 ```
 
@@ -61,7 +61,9 @@ const stop = mvtSource.on('tileerror', ({ tileId, status, error }) => {
   console.warn(`Tile ${tileId} failed`, status, error);
 });
 
-mvtSource.on('selectionchange', ({ selected, added, removed }) => { ... });
+mvtSource.on('selectionchange', ({ selected, added, removed }) => {
+  console.log(selected.length, 'selected', added, removed);
+});
 mvtSource.once('load', () => console.log('first viewport ready'));
 
 stop();
@@ -103,7 +105,7 @@ mvtSource.setStyle({
 });
 
 // Set filter
-mvtSource.setFilter((feature) => feature.properties.active);
+mvtSource.setFilter((feature) => Boolean(feature.properties.active));
 mvtSource.setFilter(false); // Remove filter
 
 // Getters completing the setter pairs
@@ -269,7 +271,7 @@ const style = {
 };
 
 // Style function
-const styleFunction = (feature) => {
+const styleFunction: FeatureStyleFunction = (feature) => {
   return feature.properties.important ? { fillStyle: 'red' } : { fillStyle: 'blue' };
 };
 
@@ -277,8 +279,8 @@ const styleFunction = (feature) => {
 // vary by zoom without calling setFilter on every zoom_changed (which forces a
 // full re-parse of every tile). The second argument is optional, so existing
 // one-argument functions keep working unchanged.
-const byZoom = (feature, context) => ({
-  lineWidth: context.zoom >= 14 ? 3 : 1,
+const byZoom: FeatureStyleFunction = (feature, context) => ({
+  lineWidth: (context?.zoom ?? 0) >= 14 ? 3 : 1,
   fillStyle: 'rgba(0, 114, 178, 0.3)',
 });
 ```
@@ -325,6 +327,144 @@ const mvtSource = new MVTSource(map, {
 });
 ```
 
+## MVTLayer
+
+One vector tile layer inside a source, created automatically as tiles decode.
+You rarely construct one; you reach them through `mvtSource.mVTLayers`, keyed
+by the layer name in the tileset.
+
+```typescript
+const roads = mvtSource.mVTLayers.roads;
+
+roads.name; // 'roads'
+roads.style; // the FeatureStyle or function this layer draws with
+roads.setStyle({ strokeStyle: 'red', lineWidth: 2 }); // this layer only
+roads.setFilter((feature) => feature.properties.class === 'motorway');
+roads.setFilter(false); // remove
+```
+
+Setting a style or filter on a single layer affects only that layer, unlike
+`mvtSource.setStyle`, which applies to all of them.
+
+## MVTFeature
+
+One feature, which may span several tiles. Reached through
+`mvtSource.getFeature(id)` or `mvtSource.getSelectedFeatures()`, and handed to
+you as `event.feature` in click and hover handlers.
+
+```typescript
+const country = mvtSource.getFeature('FRA');
+if (country) {
+  country.featureId; // 'FRA'
+  country.type; // GeometryType.Polygon
+  country.properties; // decoded properties, typed if MVTSource is generic
+  country.selected; // current selection state
+  country.hovered;
+
+  country.select();
+  country.deselect();
+  country.toggle();
+
+  // Tile-local geometry, in canvas pixels.
+  const tiles = country.getTiles();
+  const firstTileId = Object.keys(tiles)[0];
+}
+```
+
+A feature exists only while at least one tile containing it is loaded. Once
+every such tile is released the feature is disposed, so hold ids rather than
+feature references across pans.
+
+## GeometryType
+
+The three geometry types the MVT specification defines. `MVTFeature.type` is
+this enum rather than a bare number, so a `switch` over it is checked for
+exhaustiveness.
+
+```typescript
+GeometryType.Point; // 1
+GeometryType.LineString; // 2
+GeometryType.Polygon; // 3
+
+const style: FeatureStyleFunction = (feature) => {
+  switch (feature.type as GeometryType) {
+    case GeometryType.Point:
+      return { fillStyle: '#0072B2', radius: 5 };
+    case GeometryType.LineString:
+      return { strokeStyle: '#D55E00', lineWidth: 3 };
+    case GeometryType.Polygon:
+      return { fillStyle: 'rgba(0, 158, 115, 0.3)', strokeStyle: '#009E73' };
+  }
+};
+```
+
+## ManifestUtils
+
+A tile availability manifest tells the source which tiles exist, so it can skip
+requesting the ones that do not. For a sparse dataset this is the difference
+between a screen of 404s and none at all.
+
+The shape is `{ [zoom]: { [x]: [[yStart, yEnd], ...] } }`.
+
+```typescript
+const staticManifest: TileManifest = {
+  '10': { '512': [[340, 350]] },
+  '11': { '1024': [[680, 700]] },
+};
+
+// Validate before trusting a manifest from elsewhere.
+if (ManifestUtils.validateManifest(staticManifest)) {
+  const source = new MVTSource(map, { url: tileUrl, tileAvailabilityManifest: staticManifest });
+}
+
+// Or fetch it, with the source resolving it on construction.
+const fetcher = ManifestUtils.createManifestFetcher('https://api.example.com/manifest', {
+  Authorization: 'Bearer token',
+});
+
+const dynamic = new MVTSource(map, { url: tileUrl, tileAvailabilityManifest: fetcher });
+```
+
+Replace it later with `setTileAvailabilityManifest(manifest)`, or pass nothing
+to clear it. `refreshManifest()` re-runs a manifest function without changing
+which function it is.
+
+A manifest that fails to load is not fatal: the source falls back to requesting
+every tile, rather than rendering nothing.
+
+## DebugLogger
+
+Constructing a source with `debug: true` turns on logging for as long as that
+source lives, and draws the tile grid and coordinates on each canvas.
+
+```typescript
+const source = new MVTSource(map, { url: tileUrl, debug: true });
+```
+
+Debug state is reference-counted across sources, so a second source
+constructed with `debug: false` does not silence the first. To override that
+globally:
+
+```typescript
+debugLogger.setDebug(true); // force on
+debugLogger.setDebug(false); // force off
+debugLogger.setDebug(null); // hand control back to the sources
+debugLogger.isDebugEnabled();
+```
+
+`createLogger(prefix)` gives a prefixed logger using the same gate, which is
+what the library uses internally:
+
+```typescript
+const logger = createLogger('MyComponent');
+logger.log('only when debugging');
+logger.warn('only when debugging');
+logger.error('always — a failure you would otherwise never hear about');
+```
+
+Colour uses `%c` and CSS in browsers and ANSI outside one, so no escape codes
+leak into a DevTools console.
+
 ## Utilities
 
 ### ColorUtils
@@ -369,15 +509,20 @@ const styleFunc = MVTUtils.createPropertyBasedStyle('type', {
 ```typescript
 import { Mercator } from 'google-maps-vector-engine';
 
+declare const latLng: google.maps.LatLng;
+declare const zoom: number;
+declare const polygon: Point[];
+declare const linePoints: Point[];
+
 // Coordinate transformations
 const point = Mercator.fromLatLngToPoint(latLng);
-const latLng = Mercator.fromPointToLatLng(point);
+const centre = Mercator.fromPointToLatLng(point);
 const tile = Mercator.getTileAtLatLng(latLng, zoom);
 const bounds = Mercator.getTileBounds(tile);
 
 // Geometric utilities
 const inPolygon = Mercator.isPointInPolygon(point, polygon);
-const inCircle = Mercator.inCircle(centerX, centerY, radius, x, y);
+const inCircle = Mercator.inCircle(centre.lng, centre.lat, 10, point.x, point.y);
 const distance = Mercator.getDistanceFromLine(point, linePoints);
 ```
 

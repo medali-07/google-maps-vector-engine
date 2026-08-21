@@ -1,0 +1,79 @@
+name: Release
+
+# Fires only on a version tag that a maintainer pushes deliberately. Nothing
+# here runs on a normal push or pull request.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and validate without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      # Required for npm provenance, which signs the package against this
+      # workflow run so consumers can verify where it was built.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci
+
+      # The same gate CI runs. prepublishOnly runs it again during publish;
+      # running it here fails fast, before anything is built or uploaded.
+      - name: Check
+        run: npm run check
+
+      - name: Test
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Bundle size budget
+        run: npm run size
+
+      - name: Validate published package
+        run: npx publint
+
+      - name: Validate published types
+        run: npx @arethetypeswrong/cli --pack
+
+      - name: Confirm the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG" >&2
+            exit 1
+          fi
+          echo "Publishing $PKG"
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run
+        if: inputs.dry_run == true
+        run: npm publish --dry-run

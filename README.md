@@ -11,6 +11,22 @@
 
 Google Maps doesn't natively support vector tiles (PBF format) - only raster tiles (PNG/JPEG). This library enables vector tile rendering with native-like performance and full interactivity impossible with static raster tiles.
 
+## 🎬 Try it
+
+[`examples/index.html`](./examples/index.html) is a runnable demo against
+[MapLibre's public tile server](https://demotiles.maplibre.org/) — world country
+polygons, no key needed for the data:
+
+```bash
+npm install && npm run build
+open examples/index.html      # paste a Google Maps browser key, or use ?key=...
+```
+
+Click a country to select it, hover for the pointer cursor, switch between four
+styling modes, toggle layers, drag the opacity slider, and watch `getStats()`
+and the event log update live. There are [React and Vue](./examples/) bindings
+alongside it.
+
 ## ⚡ Quick Start
 
 ```bash
@@ -29,7 +45,7 @@ Or drop it straight into a page — no build step, no bundler:
 ```typescript
 import { MVTSource, DefaultStyles } from 'google-maps-vector-engine';
 
-const map = new google.maps.Map(document.getElementById('map'), {
+const map = new google.maps.Map(document.getElementById('map') as HTMLElement, {
   center: { lat: 46.52, lng: 6.57 },
   zoom: 9,
 });
@@ -70,7 +86,7 @@ const style = {
 };
 
 // Dynamic style
-const styleFunction = (feature) => {
+const styleFunction: FeatureStyleFunction = (feature) => {
   return feature.properties.important ? { fillStyle: 'red' } : { fillStyle: 'blue' };
 };
 
@@ -96,7 +112,7 @@ stop();
 
 // Layer management
 mvtSource.setVisibleLayers(['boundaries', 'roads']);
-mvtSource.setFilter((feature) => feature.properties.active);
+mvtSource.setFilter((feature) => Boolean(feature.properties.active));
 
 // Visibility, without tearing anything down
 mvtSource.setOpacity(0.5);
@@ -156,6 +172,7 @@ See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for 
 | **[🔧 Troubleshooting](./docs/TROUBLESHOOTING.md)** | Common issues and solutions       |
 | **[🚀 Advanced](./docs/ADVANCED.md)**               | Complex patterns and integrations |
 | **[🔀 Migration](./MIGRATION.md)**                  | Upgrading from 0.2.x to 1.0       |
+| **[🎬 Examples folder](./examples/)**               | Runnable demo, React and Vue      |
 
 ## 📦 Requirements
 
