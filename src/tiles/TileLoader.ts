@@ -1,13 +1,35 @@
 import { createLogger } from '../DebugLogger';
 import { TileContext, TileCoord, TileManifest, TileAvailabilitySource } from '../types';
 
+/** Why a tile failed, as reported to `onFailed` and the `tileerror` event. */
+export interface TileFailureReason {
+  /** HTTP status, when the failure was an HTTP error response. */
+  status?: number;
+  error?: unknown;
+}
+
+/** Carries the HTTP status through the promise chain to the failure handler. */
+class TileHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'TileHttpError';
+  }
+}
+
 export interface TileLoaderCallbacks {
   /** A tile body arrived and should be decoded and drawn. */
   onResponse(tileContext: TileContext, body: ArrayBuffer): void;
   /** The tile settled, successfully or not. Drives tileLoaded(). */
   onSettled(tileId: string): void;
   /** The tile is unavailable or exhausted its retries. */
-  onFailed(tileContext: TileContext): void;
+  /**
+   * @param reason Why it failed. `status` is present only for an HTTP error;
+   *   a manifest miss, a network error and a timeout all arrive without one.
+   */
+  onFailed(tileContext: TileContext, reason: TileFailureReason): void;
   /** True once the owning source has been disposed. */
   isDisposed(): boolean;
 }
@@ -138,6 +160,11 @@ export class TileLoader {
     this._retryTimers.clear();
   }
 
+  /** Tile requests currently in flight. */
+  get pendingCount(): number {
+    return this._requests.size;
+  }
+
   /**
    * Fetch a tile. `tileCoord` is the coordinate to request, which is the parent
    * tile when overzooming.
@@ -148,7 +175,7 @@ export class TileLoader {
     if (!this.isTileAvailable(z, x, y)) {
       this.logger.log(`Tile not available according to manifest: ${z}/${x}/${y}`);
       this._callbacks.onSettled(tileContext.id);
-      this._callbacks.onFailed(tileContext);
+      this._callbacks.onFailed(tileContext, { error: new Error(`Tile ${z}/${x}/${y} is absent from the manifest`) });
       return;
     }
 
@@ -175,7 +202,7 @@ export class TileLoader {
         }
 
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status} ${response.statusText}`);
+          throw new TileHttpError(response.status, `HTTP ${response.status} ${response.statusText}`);
         }
 
         const body = await response.arrayBuffer();
@@ -210,7 +237,10 @@ export class TileLoader {
         // only failure path was debug drawing, which no-ops when debug is off.
         this.logger.error(`Failed to load tile ${src}:`, error);
         this._settle(tileContext.id, controller);
-        this._callbacks.onFailed(tileContext);
+        this._callbacks.onFailed(tileContext, {
+          status: error instanceof TileHttpError ? error.status : undefined,
+          error,
+        });
       });
   }
 

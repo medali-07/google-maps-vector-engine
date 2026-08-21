@@ -7,6 +7,7 @@ import {
   TileContext,
   MVTMouseEvent,
   CanvasAndFeatures,
+  FeatureProperties,
   FeatureStyle,
   FeatureStyleFunction,
   FilterFunction,
@@ -22,12 +23,12 @@ import {
  */
 /** Per-pass hit-test accumulator. Kept out of the class so two overlapping
  *  hit tests - hover and click - cannot read each other's partial state. */
-interface HitTestState {
-  feature: MVTFeature | null;
+interface HitTestState<TProps extends object = FeatureProperties> {
+  feature: MVTFeature<TProps> | null;
   minDistance: number;
 }
 
-export class MVTLayer {
+export class MVTLayer<TProps extends object = FeatureProperties> {
   public name: string;
   public style: FeatureStyle | FeatureStyleFunction;
 
@@ -35,11 +36,11 @@ export class MVTLayer {
   private _getIDForLayerFeature: (feature: VectorTileFeature) => string | number;
   private _filter: FilterFunction | false;
   private _customDraw: ((tileContext: TileContext, tile: any, style: FeatureStyle, feature: any) => void) | false;
-  private _canvasAndMVTFeatures: Record<string, CanvasAndFeatures> = {};
-  private _mVTFeatures: Record<string | number, MVTFeature> = {};
+  private _canvasAndMVTFeatures: Record<string, CanvasAndFeatures<TProps>> = {};
+  private _mVTFeatures: Record<string | number, MVTFeature<TProps>> = {};
   private logger = createLogger('MVTLayer');
 
-  constructor(options: MVTLayerOptions) {
+  constructor(options: MVTLayerOptions<TProps>) {
     this._getIDForLayerFeature = options.getIDForLayerFeature;
     this.style = options.style;
     this.name = options.name;
@@ -66,7 +67,7 @@ export class MVTLayer {
       return;
     }
 
-    const features: MVTFeature[] = [];
+    const features: MVTFeature<TProps>[] = [];
 
     for (let i = 0; i < vectorTileFeatures.length; i++) {
       const vectorTileFeature = vectorTileFeatures[i];
@@ -88,7 +89,7 @@ export class MVTLayer {
     vectorTileFeature: VectorTileFeature,
     tileContext: TileContext,
     index: number,
-  ): MVTFeature | null {
+  ): MVTFeature<TProps> | null {
     if (this._filter && typeof this._filter === 'function') {
       if (this._filter(vectorTileFeature, tileContext) === false) {
         return null;
@@ -114,7 +115,7 @@ export class MVTLayer {
         customDraw: this._customDraw,
       };
 
-      mVTFeature = new MVTFeature(options);
+      mVTFeature = new MVTFeature<TProps>(options);
       mVTFeature.hovered = shouldBeHovered;
       this._mVTFeatures[featureId] = mVTFeature;
     } else {
@@ -140,9 +141,9 @@ export class MVTLayer {
     const mVTFeatures = this._canvasAndMVTFeatures[tileContext.id]?.features;
     if (!mVTFeatures || mVTFeatures.length === 0) return;
 
-    const regularFeatures: MVTFeature[] = [];
-    const hoveredFeatures: MVTFeature[] = [];
-    const selectedFeatures: MVTFeature[] = [];
+    const regularFeatures: MVTFeature<TProps>[] = [];
+    const hoveredFeatures: MVTFeature<TProps>[] = [];
+    const selectedFeatures: MVTFeature<TProps>[] = [];
 
     for (const feature of mVTFeatures) {
       if (feature.selected) {
@@ -212,7 +213,7 @@ export class MVTLayer {
   /**
    * Handle click events on features in this layer
    */
-  handleClickEvent(event: MVTMouseEvent, mVTSource: any): MVTMouseEvent {
+  handleClickEvent(event: MVTMouseEvent<TProps>, mVTSource: any): MVTMouseEvent<TProps> {
     const canvasAndFeatures = this._canvasAndMVTFeatures[event.tileContext!.id];
     if (!canvasAndFeatures) return event;
 
@@ -227,16 +228,16 @@ export class MVTLayer {
    * Find clicked feature with priority for selected features
    */
   private _findClickedFeature(
-    event: MVTMouseEvent,
-    mVTFeatures: MVTFeature[],
+    event: MVTMouseEvent<TProps>,
+    mVTFeatures: MVTFeature<TProps>[],
     _mVTSource: any,
-  ): MVTFeature | undefined {
+  ): MVTFeature<TProps> | undefined {
     // `hit` and `minDistance` used to be instance fields. Hover ran through a
     // timer while click ran synchronously, so two hit tests could interleave
     // and read each other's partial state - one returning the other's feature,
     // or an exact hit being discarded because the other pass had already reset
     // minDistance. They are locals now, so each pass is self-contained.
-    const hit: HitTestState = { feature: null, minDistance: Number.POSITIVE_INFINITY };
+    const hit: HitTestState<TProps> = { feature: null, minDistance: Number.POSITIVE_INFINITY };
 
     const selectedFeatures = mVTFeatures.filter((f) => f.selected);
     if (selectedFeatures.length > 0) {
@@ -253,7 +254,11 @@ export class MVTLayer {
   /**
    * Check features for click collision detection
    */
-  private _checkFeaturesForClick(event: MVTMouseEvent, features: MVTFeature[], hit: HitTestState): void {
+  private _checkFeaturesForClick(
+    event: MVTMouseEvent<TProps>,
+    features: MVTFeature<TProps>[],
+    hit: HitTestState<TProps>,
+  ): void {
     for (let i = features.length - 1; i >= 0; i--) {
       const feature = features[i];
 
@@ -269,7 +274,11 @@ export class MVTLayer {
   /**
    * Check if specific feature is clicked
    */
-  private _isFeatureClicked(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
+  private _isFeatureClicked(
+    event: MVTMouseEvent<TProps>,
+    feature: MVTFeature<TProps>,
+    hit: HitTestState<TProps>,
+  ): boolean {
     switch (feature.type) {
       case GeometryType.Polygon:
         return this._checkPolygonClick(event, feature, hit);
@@ -285,7 +294,11 @@ export class MVTLayer {
   /**
    * Check polygon click using isPointInPath
    */
-  private _checkPolygonClick(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
+  private _checkPolygonClick(
+    event: MVTMouseEvent<TProps>,
+    feature: MVTFeature<TProps>,
+    hit: HitTestState<TProps>,
+  ): boolean {
     if (feature.isPointInPath(event.tilePoint!, event.tileContext!)) {
       hit.minDistance = 0;
       return true;
@@ -296,7 +309,11 @@ export class MVTLayer {
   /**
    * Check point click with radius
    */
-  private _checkPointClick(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
+  private _checkPointClick(
+    event: MVTMouseEvent<TProps>,
+    feature: MVTFeature<TProps>,
+    hit: HitTestState<TProps>,
+  ): boolean {
     const paths = feature.getPaths(event.tileContext!);
 
     for (const path of paths) {
@@ -316,7 +333,11 @@ export class MVTLayer {
   /**
    * Check line click with tolerance
    */
-  private _checkLineClick(event: MVTMouseEvent, feature: MVTFeature, hit: HitTestState): boolean {
+  private _checkLineClick(
+    event: MVTMouseEvent<TProps>,
+    feature: MVTFeature<TProps>,
+    hit: HitTestState<TProps>,
+  ): boolean {
     const paths = feature.getPaths(event.tileContext!);
 
     for (const path of paths) {
@@ -345,7 +366,7 @@ export class MVTLayer {
     delete this._canvasAndMVTFeatures[tileId];
 
     if (canvasAndFeatures) {
-      for (const feature of canvasAndFeatures.features as MVTFeature[]) {
+      for (const feature of canvasAndFeatures.features as MVTFeature<TProps>[]) {
         if (feature.removeTile(tileId) === 0) {
           // dispose() calls back into MVTSource.unregisterFeature, which
           // removes it from the source's feature index.
@@ -369,14 +390,14 @@ export class MVTLayer {
   /**
    * Get feature by ID
    */
-  getFeature(featureId: string | number): MVTFeature | undefined {
+  getFeature(featureId: string | number): MVTFeature<TProps> | undefined {
     return this._mVTFeatures[featureId];
   }
 
   /**
    * Get all features in this layer
    */
-  getAllFeatures(): MVTFeature[] {
+  getAllFeatures(): MVTFeature<TProps>[] {
     return Object.values(this._mVTFeatures);
   }
 

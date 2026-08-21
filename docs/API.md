@@ -15,8 +15,11 @@ new MVTSource(map: google.maps.Map, options: MVTSourceOptions)
 #### Feature Selection
 
 ```typescript
-// Set selected features
-mvtSource.setSelectedFeatures(['feature1', 'feature2']);
+// One method, three modes. `replace` is the default.
+mvtSource.setSelection(['feature1', 'feature2']);
+mvtSource.setSelection(['feature3'], { mode: 'add' });
+mvtSource.setSelection(['feature1'], { mode: 'remove' });
+mvtSource.setSelection([]); // clear
 
 // Get selected features
 const selected = mvtSource.getSelectedFeatures();
@@ -38,9 +41,46 @@ if (mvtSource.isFeatureReplaced('feature1')) {
 const feature = mvtSource.getFeature('feature1');
 
 // Clear selections
-mvtSource.deselectAllFeatures();
+mvtSource.deselectAllFeatures(); // shorthand for setSelection([])
 mvtSource.clearAllHoveredFeatures();
+
+// Zoom to what was just selected
+mvtSource.fitBounds('feature1');
+const bounds = mvtSource.getFeatureBounds('feature1');
 ```
+
+`multipleSelection` governs _click_ behaviour only. `setSelection` always does
+exactly what it is asked, whatever that option is set to.
+
+#### Events
+
+`on` returns an unsubscribe function, so you need not keep the listener around.
+
+```typescript
+const stop = mvtSource.on('tileerror', ({ tileId, status, error }) => {
+  console.warn(`Tile ${tileId} failed`, status, error);
+});
+
+mvtSource.on('selectionchange', ({ selected, added, removed }) => { ... });
+mvtSource.once('load', () => console.log('first viewport ready'));
+
+stop();
+mvtSource.off('selectionchange'); // every listener for one event
+mvtSource.off(); // everything
+```
+
+| Event             | Payload                        | Fires when                                   |
+| ----------------- | ------------------------------ | -------------------------------------------- |
+| `tileload`        | `{ tileId, tileContext }`      | A tile finished decoding and drawing         |
+| `tileerror`       | `{ tileId, status?, error? }`  | A tile failed; `status` only for HTTP errors |
+| `load`            | `void`                         | The first full viewport settled (once)       |
+| `idle`            | `void`                         | Every visible tile settled                   |
+| `selectionchange` | `{ selected, added, removed }` | The selected set changed                     |
+| `click`           | `MVTMouseEvent`                | The pointer was clicked over the source      |
+| `hover`           | `MVTMouseEvent`                | The pointer moved over the source            |
+
+Constructor callbacks (`onClick`, `onMouseHover`) still work, but only
+`on`/`off`/`once` let you register more than one listener.
 
 #### Layer Management
 
@@ -65,6 +105,12 @@ mvtSource.setStyle({
 // Set filter
 mvtSource.setFilter((feature) => feature.properties.active);
 mvtSource.setFilter(false); // Remove filter
+
+// Getters completing the setter pairs
+mvtSource.getUrl();
+mvtSource.getStyle();
+mvtSource.getFilter();
+mvtSource.getClickableLayers();
 ```
 
 #### Rendering & Performance
@@ -74,13 +120,22 @@ mvtSource.setFilter(false); // Remove filter
 mvtSource.redrawAllTiles();
 mvtSource.redrawTile('10:512:512');
 
-// Performance monitoring
-await mvtSource.tileLoaded(); // Wait for all visible tiles to load
-const metrics = { tilesLoaded: mvtSource.loadedTilesLen };
+// Re-fetch a tile from the network, rather than repainting cached geometry
+mvtSource.refreshTile('10:512:512');
 
-// Tile management
-mvtSource.deleteTileDrawn('10:512:512');
-mvtSource.clearTile(canvas);
+// Wait for all visible tiles to settle
+await mvtSource.tileLoaded();
+
+// Typed snapshot of what the source is doing
+const stats = mvtSource.getStats();
+// { visibleTiles, cachedTiles, loadedTiles, pendingRequests, layers,
+//   features, selectedFeatures, hoveredFeatures, pixelRatio, debug, disposed }
+
+// Visibility, without tearing anything down
+mvtSource.setOpacity(0.5);
+mvtSource.hide();
+mvtSource.show();
+mvtSource.isVisible();
 
 // Cleanup
 mvtSource.dispose(); // Always call when done
@@ -114,7 +169,14 @@ await mvtSource.refreshManifest();
 | `cache`         | `boolean`                  | `false`          | Enable tile caching              |
 | `debug`         | `boolean`                  | `false`          | Enable debug logging             |
 | `tileSize`      | `number`                   | `256`            | Tile size in pixels              |
-| `sourceMaxZoom` | `number \| false`          | `false`          | Max zoom for requests            |
+| `sourceMaxZoom` | `number \| false`          | `false`          | Deepest zoom your tiles exist at |
+| `minZoom`       | `number`                   | `0`              | Lowest zoom that requests tiles  |
+| `maxZoom`       | `number`                   | `22`             | Highest zoom that requests tiles |
+
+`sourceMaxZoom` and `maxZoom` are different things. `sourceMaxZoom` says how
+deep your tileset goes; past it, tiles are overzoomed from their parent.
+`maxZoom` says where rendering stops entirely. Before 1.0 `maxZoom` was set to
+`sourceMaxZoom`, which made the overzoom path unreachable — see `MIGRATION.md`.
 
 ### Selection Options
 
@@ -298,11 +360,9 @@ const styleFunc = MVTUtils.createPropertyBasedStyle('type', {
   residential: { fillStyle: 'yellow' },
   commercial: { fillStyle: 'blue' },
 });
-
-// Performance monitoring
-const metrics = MVTUtils.performance.getMetrics(mvtSource);
-const time = MVTUtils.performance.measureSelectionTime(mvtSource, ['f1']);
 ```
+
+`MVTUtils.performance` was removed in 1.0 — use `mvtSource.getStats()`.
 
 ### Mercator
 
@@ -328,14 +388,13 @@ const distance = Mercator.getDistanceFromLine(point, linePoints);
 ```typescript
 import { MVTFactory } from 'google-maps-vector-engine';
 
-// Administrative boundaries
-const config = MVTFactory.createAdministrativeConfig('https://api.example.com', 'communes', {
-  setSelectedOnClick: true,
-});
-
 // High performance
 const perfConfig = MVTFactory.createHighPerformanceConfig('https://tiles.com/{z}/{x}/{y}.pbf');
 ```
+
+`createAdministrativeConfig` was removed in 1.0: it hardcoded French
+administrative divisions in a library that is not about France. Build the
+configuration directly — see `MIGRATION.md`.
 
 ### createMVTSource
 
@@ -389,15 +448,32 @@ import { AccessiblePalette } from 'google-maps-vector-engine';
 
 ## Error Handling
 
+The constructor validates its options and throws `MVTOptionsError` — a subclass
+of `MVTError` — naming the option at fault.
+
 ```typescript
+import { MVTOptionsError } from 'google-maps-vector-engine';
+
 try {
-  const mvtSource = new MVTSource(map, {
-    url: 'https://tiles.com/{z}/{x}/{y}.pbf',
-    debug: true, // Shows detailed errors
-  });
+  const mvtSource = new MVTSource(map, { url: tileUrl });
 } catch (error) {
-  console.error('MVTSource failed:', error);
+  if (error instanceof MVTOptionsError) {
+    console.error(`Bad option "${error.option}": ${error.message}`);
+  }
 }
+```
+
+It throws when `url` is missing, empty, or lacks `{z}`/`{x}`/`{y}`; when the
+first argument is not a `google.maps.Map`; when `tileSize` is not positive;
+when `maxPixelRatio` is below 1; when `minZoom` exceeds `maxZoom`; or when
+`style` is neither an object nor a function.
+
+Runtime tile failures are not thrown — they arrive as `tileerror` events:
+
+```typescript
+mvtSource.on('tileerror', ({ tileId, status, error }) => {
+  // status is present only for an HTTP error response
+});
 ```
 
 The library handles gracefully:

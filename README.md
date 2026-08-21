@@ -71,22 +71,52 @@ mvtSource.setStyle(styleFunction);
 ## 🔧 Key Methods
 
 ```typescript
-// Feature selection
-mvtSource.setSelectedFeatures(['feature1', 'feature2']);
+// Feature selection - one method, three modes
+mvtSource.setSelection(['feature1', 'feature2']); // replace (default)
+mvtSource.setSelection(['feature3'], { mode: 'add' });
+mvtSource.setSelection(['feature1'], { mode: 'remove' });
 const selectedIds = mvtSource.getSelectedFeatureIds();
-const selectedFeatures = mvtSource.getSelectedFeatures();
+
+// Zoom to a feature
+mvtSource.fitBounds('feature1');
+
+// Events - add, remove and replace listeners at any time
+const stop = mvtSource.on('selectionchange', ({ selected }) => console.log(selected));
+mvtSource.on('tileerror', ({ tileId, status }) => console.warn(tileId, status));
+stop();
 
 // Layer management
 mvtSource.setVisibleLayers(['boundaries', 'roads']);
-const visibleLayers = mvtSource.getVisibleLayers();
-
-// Filtering
 mvtSource.setFilter((feature) => feature.properties.active);
 
-// Performance & cleanup
+// Visibility, without tearing anything down
+mvtSource.setOpacity(0.5);
+mvtSource.hide();
+mvtSource.show();
+
+// Diagnostics & cleanup
 await mvtSource.tileLoaded(); // Wait for tiles to load
-mvtSource.clearAllHoveredFeatures();
+console.log(mvtSource.getStats());
 mvtSource.dispose();
+```
+
+### Typed feature properties
+
+`MVTSource` is generic over your feature properties, so `event.feature` is
+typed all the way through:
+
+```typescript
+interface Commune {
+  name: string;
+  population: number;
+}
+
+const source = new MVTSource<Commune>(map, {
+  url: tileUrl,
+  onClick: (event) => {
+    event.feature?.properties.name; // string
+  },
+});
 ```
 
 ## 🔬 Performance Testing
@@ -116,6 +146,7 @@ See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for 
 | **[⚡ Performance](./docs/PERFORMANCE.md)**         | Optimization strategies           |
 | **[🔧 Troubleshooting](./docs/TROUBLESHOOTING.md)** | Common issues and solutions       |
 | **[🚀 Advanced](./docs/ADVANCED.md)**               | Complex patterns and integrations |
+| **[🔀 Migration](./MIGRATION.md)**                  | Upgrading from 0.2.x to 1.0       |
 
 ## 📦 Requirements
 

@@ -113,7 +113,7 @@ export class Mercator {
   /**
    * Convert map event to tile-relative point coordinates
    */
-  static fromLatLngToTilePoint(map: google.maps.Map, event: MVTMouseEvent): Point {
+  static fromLatLngToTilePoint(map: google.maps.Map, event: Pick<MVTMouseEvent, 'latLng' | 'pixel'>): Point {
     const zoom = map.getZoom() || 0;
     const tile = this.getTileAtLatLng(event.latLng, zoom);
     const tileBounds = this.getTileBounds(tile);

@@ -109,7 +109,7 @@ export function createMockMVTSource(): any {
     isFeatureSelected: jest.fn(() => false),
     getSelectedFeaturesInTile: jest.fn(() => []),
     getSelectedFeatureIds: jest.fn(() => []),
-    setSelectedFeatures: jest.fn(),
+    setSelection: jest.fn(),
     redrawTile: jest.fn(),
     redrawAllTiles: jest.fn(),
     getTileObject: jest.fn(() => ({ x: 0, y: 0, z: 10 })),

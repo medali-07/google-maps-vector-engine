@@ -27,7 +27,7 @@ jest.mock('../../src/MVTSource', () => {
       getFeature: jest.fn(() => ({ id: 'mock-feature' })),
       isFeatureSelected: jest.fn(() => false),
       isFeatureHovered: jest.fn(() => false),
-      setSelectedFeatures: jest.fn(),
+      setSelection: jest.fn(),
       deselectAllFeatures: jest.fn(),
       dispose: jest.fn(),
       setStyle: jest.fn(),
@@ -207,7 +207,7 @@ describe('MVTSource Performance Tests', () => {
 
     test('should select single feature quickly', () => {
       const start = performance.now();
-      mvtSource.setSelectedFeatures(['feature_1']);
+      mvtSource.setSelection(['feature_1']);
       const duration = performance.now() - start;
 
       console.log(`⚡ Single Feature Selection: ${duration.toFixed(2)}ms`);
@@ -218,7 +218,7 @@ describe('MVTSource Performance Tests', () => {
       const featureIds = Array.from({ length: 100 }, (_, i) => `feature_${i}`);
 
       const start = performance.now();
-      mvtSource.setSelectedFeatures(featureIds);
+      mvtSource.setSelection(featureIds);
       const duration = performance.now() - start;
 
       console.log(`⚡ 100 Features Selection: ${duration.toFixed(2)}ms`);
@@ -229,7 +229,7 @@ describe('MVTSource Performance Tests', () => {
       const featureIds = Array.from({ length: 1000 }, (_, i) => `feature_${i}`);
 
       const start = performance.now();
-      mvtSource.setSelectedFeatures(featureIds);
+      mvtSource.setSelection(featureIds);
       const duration = performance.now() - start;
 
       console.log(`⚡ 1000 Features Selection: ${duration.toFixed(2)}ms`);
@@ -239,7 +239,7 @@ describe('MVTSource Performance Tests', () => {
     test('should deselect all features quickly', () => {
       // Setup: select some features first
       const featureIds = Array.from({ length: 500 }, (_, i) => `feature_${i}`);
-      mvtSource.setSelectedFeatures(featureIds);
+      mvtSource.setSelection(featureIds);
 
       const start = performance.now();
       mvtSource.deselectAllFeatures();
@@ -305,7 +305,7 @@ describe('MVTSource Performance Tests', () => {
     test('should dispose quickly', () => {
       // Setup some data
       const featureIds = Array.from({ length: 100 }, (_, i) => `feature_${i}`);
-      mvtSource.setSelectedFeatures(featureIds);
+      mvtSource.setSelection(featureIds);
 
       const start = performance.now();
       mvtSource.dispose();
@@ -321,7 +321,7 @@ describe('MVTSource Performance Tests', () => {
 
       for (let i = 0; i < iterations; i++) {
         const featureIds = Array.from({ length: 10 }, (_, j) => `feature_${i}_${j}`);
-        mvtSource.setSelectedFeatures(featureIds);
+        mvtSource.setSelection(featureIds);
         mvtSource.deselectAllFeatures();
       }
 
@@ -386,7 +386,7 @@ describe('MVTSource Performance Tests', () => {
 
       // Simulate large dataset operations
       const featureIds = Array.from({ length: 2000 }, (_, i) => `feature_${i}`);
-      mvtSource.setSelectedFeatures(featureIds);
+      mvtSource.setSelection(featureIds);
 
       // Multiple style changes
       for (let i = 0; i < 5; i++) {
@@ -418,7 +418,7 @@ describe('MVTSource Performance Tests', () => {
     test('should provide performance metrics', () => {
       // Setup some state
       const featureIds = Array.from({ length: 50 }, (_, i) => `feature_${i}`);
-      mvtSource.setSelectedFeatures(featureIds);
+      mvtSource.setSelection(featureIds);
 
       const start = performance.now();
       const metrics = MVTUtils.performance.getMetrics(mvtSource);

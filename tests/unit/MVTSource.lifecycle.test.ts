@@ -239,7 +239,7 @@ describe('MVTSource tile lifecycle', () => {
 
   describe('selection state', () => {
     test('survives a feature being unregistered when its tile is released', () => {
-      source.setSelectedFeatures(['feature-a']);
+      source.setSelection(['feature-a']);
       expect(source.isFeatureSelected('feature-a')).toBe(true);
 
       // Releasing a tile disposes off-screen features, which unregisters them.
