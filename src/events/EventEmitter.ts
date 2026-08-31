@@ -11,9 +11,14 @@ import { createLogger } from '../DebugLogger';
  * the dispatch - one consumer's bad handler must not stop the others from
  * being told, and must not take down a tile-load path with it.
  */
+type Handler = ((payload: never) => void) & {
+  /** For a `once` wrapper: the listener the caller actually registered. */
+  original?: (payload: never) => void;
+};
+
 export class EventEmitter<TEvents> {
   private logger = createLogger('EventEmitter');
-  private _listeners = new Map<keyof TEvents, Set<(payload: never) => void>>();
+  private _listeners = new Map<keyof TEvents, Set<Handler>>();
 
   /**
    * Subscribe to an event.
@@ -38,6 +43,9 @@ export class EventEmitter<TEvents> {
       this.off(event, wrapped);
       listener(payload);
     };
+    // Remember the caller's function, so `off(event, listener)` can remove a
+    // `once` subscription too - the set stores the wrapper, not the listener.
+    (wrapped as Handler).original = listener as (payload: never) => void;
 
     return this.on(event, wrapped);
   }
@@ -61,7 +69,15 @@ export class EventEmitter<TEvents> {
       return;
     }
 
-    handlers.delete(listener as (payload: never) => void);
+    if (!handlers.delete(listener as (payload: never) => void)) {
+      // Not registered directly - it may be behind a `once` wrapper.
+      for (const handler of handlers) {
+        if (handler.original === (listener as (payload: never) => void)) {
+          handlers.delete(handler);
+          break;
+        }
+      }
+    }
     if (handlers.size === 0) {
       this._listeners.delete(event);
     }

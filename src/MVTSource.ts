@@ -150,6 +150,11 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
   // before its declaration further down the class body, which the declaration
   // build rejects with TS2729. The constructor always assigns it anyway.
   private _fadeInDuration: number;
+  /** Canvases still held transparent awaiting their first content. Tracked
+   *  explicitly: using `style.opacity === '0'` as the marker latched every
+   *  tile invisible after `setOpacity(0)`, because a canvas legitimately at
+   *  opacity 0 was indistinguishable from one waiting on the fade-in. */
+  private _pendingReveal = new WeakSet<HTMLCanvasElement>();
 
   /** Cursor the map had before we overrode it, restored when hover ends. */
   private _cursorOverridden = false;
@@ -532,6 +537,20 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     const tileContext = this.drawTile(coord, zoom, ownerDocument);
     this._setVisibleTile(tileContext);
     this._mountedTiles.set(tileContext.canvas, tileContext.id);
+
+    // Keep the idle edge honest. A cache hit already has its content on
+    // screen, so it counts as loaded; a fetch means the source just became
+    // busy. Without the busy edge, a pan that revealed one uncached tile
+    // settled without ever re-firing `idle`, because `_wasIdle` stayed
+    // latched from the previous cycle.
+    if (this._tilesDrawn[tileContext.id]) {
+      this._markTileLoaded(tileContext.id);
+    } else {
+      this._loadedTileIds.delete(tileContext.id);
+      this.loadedTilesLen = this._loadedTileIds.size;
+      this._checkIdle();
+    }
+
     return tileContext.canvas;
   }
 
@@ -555,8 +574,23 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
 
     // The same tile id can be mounted more than once (repeated worlds at low
     // zoom). Only tear down shared state once the last copy is gone.
-    for (const id of this._mountedTiles.values()) {
+    for (const [canvas, id] of this._mountedTiles.entries()) {
       if (id === tileId) {
+        // If the released copy is the one _visibleTiles points at, repoint it
+        // at a surviving mount - otherwise every later repaint of this tile
+        // would draw into a detached canvas while the copy still on screen
+        // never updated again.
+        if (this._visibleTiles[tileId]?.canvas === tile && canvas instanceof HTMLCanvasElement) {
+          const zoom = this.getTileObject(tileId).z;
+          this._visibleTiles[tileId] = {
+            id: tileId,
+            canvas,
+            zoom,
+            tileSize: this._tileSize,
+            pixelRatio: this._pixelRatio,
+            parentId: this._getParentId(tileId),
+          };
+        }
         this.logger.log(`Released one copy of tile ${tileId}; others still mounted`);
         return;
       }
@@ -580,7 +614,15 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       delete this._tilesDrawn[tileId];
     }
 
+    // The tile is gone, so its "loaded" mark must go with it - a stale entry
+    // let tileLoaded() report true while a re-requested tile was still being
+    // fetched. And if this tile was the only one still pending, the viewport
+    // just became idle without any settle to notice it.
+    this._loadedTileIds.delete(tileId);
+    this.loadedTilesLen = this._loadedTileIds.size;
+
     this._redraws.cancel(tileId);
+    this._checkIdle();
   }
 
   /**
@@ -712,6 +754,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
       // blank white squares that snap to full detail one by one.
       canvas.style.opacity = '0';
       canvas.style.transition = `opacity ${this._fadeInDuration}ms ease-out`;
+      this._pendingReveal.add(canvas);
     } else if (this._opacity !== 1) {
       canvas.style.opacity = String(this._opacity);
     }
@@ -732,6 +775,8 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
    */
   private _revealTile(tileContext: TileContext): void {
     if (this._fadeInDuration <= 0) return;
+
+    this._pendingReveal.delete(tileContext.canvas);
 
     // Ramp to the source's own opacity, not a hardcoded 1, or setOpacity()
     // would be silently undone by the next tile that finished loading.
@@ -1935,7 +1980,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     for (const tileContext of Object.values(this._visibleTiles)) {
       // Only touch tiles that have something to show; a tile still waiting on
       // its response is held at 0 by the fade-in and must stay there.
-      if (tileContext.canvas.style.opacity !== '0') {
+      if (!this._pendingReveal.has(tileContext.canvas)) {
         tileContext.canvas.style.opacity = String(this._opacity);
       }
     }
@@ -2196,40 +2241,45 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
     const merger = await this._getGeometryMerger();
 
     // Collect all coordinate rings from all tiles containing this feature
-    for (const [tileId, tileData] of Object.entries(tiles)) {
-      const vectorFeature = tileData.vectorTileFeature;
-      const coordinates = vectorFeature.loadGeometry();
+    // Walk every part per tile: a tiler can split one feature into several
+    // same-id tile features, and a merge built from only the first part would
+    // drop the rest of the geometry.
+    for (const tileId of Object.keys(tiles)) {
+      for (const tileData of feature.getTileParts(tileId)) {
+        const vectorFeature = tileData.vectorTileFeature;
+        const coordinates = vectorFeature.loadGeometry();
 
-      if (coordinates && coordinates.length > 0) {
-        // Set properties from the first feature encountered
-        if (Object.keys(properties).length === 0) {
-          properties = { ...vectorFeature.properties };
-        }
+        if (coordinates && coordinates.length > 0) {
+          // Set properties from the first feature encountered
+          if (Object.keys(properties).length === 0) {
+            properties = { ...vectorFeature.properties };
+          }
 
-        // Convert PBF coordinates to geographic coordinates
-        const tileContext = this._visibleTiles[tileId];
-        if (tileContext) {
-          // Overzoomed tiles carry the *parent* tile's geometry, so the
-          // coordinates have to be projected from the parent's z/x/y. Deriving
-          // them from the child put every overlay for an overzoomed feature at
-          // the wrong place on the map.
-          const sourceTileId = tileContext.parentId || tileContext.id;
-          const convertedCoords = merger.convertPBFCoordinatesToGeoJSON(
-            coordinates,
-            this.getTileObject(sourceTileId),
-            tileContext.tileSize,
-            tileData.divisor,
-            vectorFeature.type,
-          );
+          // Convert PBF coordinates to geographic coordinates
+          const tileContext = this._visibleTiles[tileId];
+          if (tileContext) {
+            // Overzoomed tiles carry the *parent* tile's geometry, so the
+            // coordinates have to be projected from the parent's z/x/y.
+            // Deriving them from the child put every overlay for an
+            // overzoomed feature at the wrong place on the map.
+            const sourceTileId = tileContext.parentId || tileContext.id;
+            const convertedCoords = merger.convertPBFCoordinatesToGeoJSON(
+              coordinates,
+              this.getTileObject(sourceTileId),
+              tileContext.tileSize,
+              tileData.divisor,
+              vectorFeature.type,
+            );
 
-          if (convertedCoords && vectorFeature.type === 3) {
-            // Only handle Polygons for now
-            // convertedCoords is an array of rings from this tile
-            if (Array.isArray(convertedCoords) && convertedCoords.length > 0) {
-              // Add all rings from this tile to our collection
-              for (const ring of convertedCoords as number[][][]) {
-                if (ring && ring.length > 0) {
-                  allCoordinateRings.push(ring);
+            if (convertedCoords && vectorFeature.type === 3) {
+              // Only handle Polygons for now
+              // convertedCoords is an array of rings from this tile
+              if (Array.isArray(convertedCoords) && convertedCoords.length > 0) {
+                // Add all rings from this tile to our collection
+                for (const ring of convertedCoords as number[][][]) {
+                  if (ring && ring.length > 0) {
+                    allCoordinateRings.push(ring);
+                  }
                 }
               }
             }
@@ -2304,7 +2354,7 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
                 );
 
                 // Check if the request was aborted or feature is no longer selected
-                if (abortController.signal.aborted || !this._selectedFeatureIds.has(featureId)) {
+                if (abortController.signal.aborted || this._disposed || !this._selectedFeatureIds.has(featureId)) {
                   return; // Don't apply the result if feature was deselected
                 }
 
@@ -2337,6 +2387,13 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
             featureData = mergedFeature;
           }
         }
+      }
+
+      // The awaits above (replacement fetch, lazy geometry-merge import) can
+      // suspend long enough for the world to move on. A deselection or a
+      // dispose must win over a stale "selected" result arriving late.
+      if (this._disposed || (selected && !this._selectedFeatureIds.has(featureId))) {
+        return;
       }
 
       // Fallback to empty feature
