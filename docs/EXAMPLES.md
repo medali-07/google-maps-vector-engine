@@ -102,10 +102,13 @@ function showCountryInfo(name: unknown, population: unknown): void {
   const info = document.getElementById('info');
   if (!info) return;
 
-  info.innerHTML = `
-    <h3>${String(name)}</h3>
-    <p>Population: ${Number(population).toLocaleString()}</p>
-  `;
+  // Feature properties come from the tile server. Treat them as untrusted
+  // input: build the panel with textContent, never innerHTML.
+  const title = document.createElement('h3');
+  title.textContent = String(name);
+  const body = document.createElement('p');
+  body.textContent = `Population: ${Number(population).toLocaleString()}`;
+  info.replaceChildren(title, body);
 }
 ```
 
@@ -136,14 +139,15 @@ function updateSelectedList() {
   const list = document.getElementById('selected-list');
   if (!list) return;
 
-  const selected = municipalitySource.getSelectedFeatures();
-  list.innerHTML = selected
-    .map(
-      (feature) => `
-    <li>${String(feature.properties.name)} (Pop: ${Number(feature.properties.population).toLocaleString()})</li>
-  `,
-    )
-    .join('');
+  // Feature properties are tile-server data: render them as text, not markup.
+  const items = municipalitySource.getSelectedFeatures().map((feature) => {
+    const item = document.createElement('li');
+    const name = String(feature.properties.name);
+    const population = Number(feature.properties.population).toLocaleString();
+    item.textContent = `${name} (Pop: ${population})`;
+    return item;
+  });
+  list.replaceChildren(...items);
 }
 ```
 
@@ -267,22 +271,23 @@ class FeatureSearch {
     this.displayResults(results);
   }
 
-  private displayResults(results: any[]) {
+  private displayResults(results: { id: string; name: string }[]) {
     const panel = document.getElementById('search-results');
     if (!panel) return;
 
-    panel.innerHTML = `
-      <h4>${results.length} Results</h4>
-      ${results
-        .map(
-          (r) => `
-        <div onclick="featureSearch.selectResult('${r.id}')">
-          <strong>${r.name}</strong>
-        </div>
-      `,
-        )
-        .join('')}
-    `;
+    // Search results are remote data: build the panel with textContent and a
+    // real listener, never interpolated markup or inline handlers.
+    const heading = document.createElement('h4');
+    heading.textContent = `${results.length} Results`;
+    const rows = results.map((r) => {
+      const row = document.createElement('div');
+      const label = document.createElement('strong');
+      label.textContent = r.name;
+      row.append(label);
+      row.addEventListener('click', () => this.selectResult(r.id));
+      return row;
+    });
+    panel.replaceChildren(heading, ...rows);
   }
 
   selectResult(featureId: string) {

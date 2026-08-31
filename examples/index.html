@@ -259,7 +259,7 @@
     <!--
       Built output from `npm run build`. Swap for the CDN copy to run this file
       straight from disk with no build step:
-      <script src="https://unpkg.com/google-maps-vector-engine"></script>
+      <script src="https://unpkg.com/google-maps-vector-engine@1"></script>
     -->
     <script src="../dist/google-maps-vector-engine.min.js"></script>
 
@@ -273,9 +273,13 @@
 
       const $ = (id) => document.getElementById(id);
       const log = (message, isError) => {
+        // Messages can carry feature properties straight from the tile server,
+        // so they are appended as text, never markup.
         const line = document.createElement('div');
         if (isError) line.className = 'err';
-        line.innerHTML = `<b>${new Date().toLocaleTimeString()}</b> ${message}`;
+        const time = document.createElement('b');
+        time.textContent = new Date().toLocaleTimeString();
+        line.append(time, ` ${message}`);
         $('log').prepend(line);
         while ($('log').childElementCount > 40) $('log').lastChild.remove();
       };
@@ -359,19 +363,7 @@
         });
 
         try {
-          source = new MVTSource(map, {
-            url: TILE_URL,
-            sourceMaxZoom: SOURCE_MAX_ZOOM,
-            style: currentStyle(),
-            visibleLayers: visibleLayers(),
-            clickableLayers: ['countries'],
-            cache: true,
-            setSelectedOnClick: true,
-            onClick: (event) => {
-              if (!event.feature) return;
-              log(`clicked <b>${event.feature.properties.NAME}</b>`);
-            },
-          });
+          source = createSource();
         } catch (error) {
           // The constructor validates its options and throws MVTOptionsError.
           if (error instanceof MVTOptionsError) {
@@ -387,22 +379,44 @@
           if (hit.length) log(`selection now ${hit.length} countries`);
         });
 
-        source.on('tileerror', ({ tileId, status }) => log(`tile ${tileId} failed${status ? ` (${status})` : ''}`, true));
-        source.once('load', () => log('first viewport loaded'));
-        source.on('idle', renderStats);
-        source.on('selectionchange', ({ selected }) => {
+        wireControls();
+        setInterval(renderStats, 1000);
+        log('source created');
+      };
+
+      // Everything about the source lives here, so the debug toggle can rebuild
+      // it without silently dropping options or listeners.
+      function createSource({ debug = false, selectedFeatures } = {}) {
+        const created = new MVTSource(map, {
+          url: TILE_URL,
+          sourceMaxZoom: SOURCE_MAX_ZOOM,
+          style: currentStyle(),
+          visibleLayers: visibleLayers(),
+          clickableLayers: ['countries'],
+          cache: true,
+          setSelectedOnClick: true,
+          debug,
+          selectedFeatures,
+          onClick: (event) => {
+            if (!event.feature) return;
+            log(`clicked ${event.feature.properties.NAME}`);
+          },
+        });
+
+        created.on('tileerror', ({ tileId, status }) => log(`tile ${tileId} failed${status ? ` (${status})` : ''}`, true));
+        created.once('load', () => log('first viewport loaded'));
+        created.on('idle', renderStats);
+        created.on('selectionchange', ({ selected }) => {
           const names = selected
-            .map((id) => source.getFeature(id))
+            .map((id) => created.getFeature(id))
             .filter(Boolean)
             .map((f) => f.properties.NAME);
           $('selected').textContent = names.length ? names.join(', ') : 'Nothing selected.';
           renderStats();
         });
 
-        wireControls();
-        setInterval(renderStats, 1000);
-        log('source created');
-      };
+        return created;
+      }
 
       function renderStats() {
         if (!source) return;
@@ -442,20 +456,11 @@
         $('opacity').addEventListener('input', (e) => source.setOpacity(e.target.value / 100));
 
         $('debug').addEventListener('change', (e) => {
-          // debug is a construction option, so rebuild the source to change it.
+          // debug is a construction option, so rebuild the source — through the
+          // same factory, so every option and listener survives the swap.
           const selected = source.getSelectedFeatureIds();
           source.dispose();
-          source = new MVTSource(map, {
-            url: TILE_URL,
-            sourceMaxZoom: SOURCE_MAX_ZOOM,
-            style: currentStyle(),
-            visibleLayers: visibleLayers(),
-            clickableLayers: ['countries'],
-            cache: true,
-            debug: e.target.checked,
-            selectedFeatures: selected,
-          });
-          source.on('idle', renderStats);
+          source = createSource({ debug: e.target.checked, selectedFeatures: selected });
           log(`debug ${e.target.checked ? 'on' : 'off'}`);
         });
       }

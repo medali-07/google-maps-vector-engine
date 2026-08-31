@@ -23,17 +23,35 @@ export function CountryMap({ apiKey }: { apiKey: string }) {
   useEffect(() => {
     if (!container.current) return;
 
+    let cancelled = false;
+    const createMap = () => {
+      // The load event can fire after unmount (StrictMode remounts, route
+      // changes): removing the script element does not cancel it.
+      if (cancelled || !container.current) return;
+      setMap(new google.maps.Map(container.current, { center: { lat: 20, lng: 0 }, zoom: 3 }));
+    };
+
+    // Reuse the API if a previous mount (or anything else on the page) already
+    // loaded it — appending the loader twice is an error.
+    if (typeof google !== 'undefined' && google.maps) {
+      createMap();
+      return () => {
+        cancelled = true;
+      };
+    }
+
     // In a real app use @googlemaps/js-api-loader; this keeps the example to
     // one dependency.
     const script = document.createElement('script');
     script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
     script.async = true;
-    script.onload = () => {
-      setMap(new google.maps.Map(container.current!, { center: { lat: 20, lng: 0 }, zoom: 3 }));
-    };
+    script.onload = createMap;
     document.head.append(script);
 
-    return () => script.remove();
+    return () => {
+      cancelled = true;
+      script.remove();
+    };
   }, [apiKey]);
 
   // Memoised so the style is not a new function on every render, which would
@@ -53,7 +71,11 @@ export function CountryMap({ apiKey }: { apiKey: string }) {
   });
 
   if (error) {
-    return <p role="alert">Bad option &ldquo;{error.option}&rdquo;: {error.message}</p>;
+    return (
+      <p role='alert'>
+        Bad option &ldquo;{error.option}&rdquo;: {error.message}
+      </p>
+    );
   }
 
   const names = selected
