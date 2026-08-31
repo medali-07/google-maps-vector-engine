@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - unreleased
+## [1.0.0] - 2026-08-31
 
 The first release the package's own toolchain could verify. Lint checked one
 30-line type shim, the coverage threshold was set above what the suite could
@@ -66,6 +66,29 @@ Breaking changes are listed in [MIGRATION.md](./MIGRATION.md).
   also supplied.
 - `DebugLogger` was a process-global singleton: a second source constructed
   with `debug: false` silenced the first.
+- A feature with id `0` (legal per the MVT spec) had its id replaced by a
+  tile-local index, so it took a different identity in every tile and could
+  alias a real feature.
+- When a tiler split one feature into several tile features sharing an id
+  (clipped rings, road segments), each part silently overwrote the previous
+  one, so only the last part was drawn and hit-tested.
+- `idle` never re-fired after the first settle unless a whole zoom change
+  intervened: requesting a tile did not mark the source busy, so the edge
+  trigger stayed latched. A released tile also kept its "loaded" mark, letting
+  `tileLoaded()` report true while a re-requested tile was still fetching.
+- `setOpacity(0)` latched every visible tile invisible: a later `setOpacity`
+  mistook them for tiles still awaiting their fade-in and skipped them.
+- A tile-fetch retry scheduled during the backoff window survived the tile's
+  release and re-fetched it, rebuilding state for a tile Google Maps had
+  already discarded.
+- `featureSelectionCallback` could fire a stale `selected: true` after the
+  feature had been deselected - or the source disposed - while the async
+  merge work was still in flight.
+- Releasing one copy of a tile mounted twice (repeated worlds at low zoom)
+  left repaints targeting the released canvas, so the copy still on screen
+  never updated again.
+- `off(event, listener)` could not remove a listener registered with
+  `once()`.
 
 ### Added
 

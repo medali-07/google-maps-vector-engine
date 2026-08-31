@@ -84,10 +84,10 @@ jobs:
         run: npm run size
 
       - name: Validate published package
-        run: npx publint
+        run: npx --no-install publint
 
       - name: Validate published types
-        run: npx @arethetypeswrong/cli --pack
+        run: npx --no-install attw --pack
 
       - name: Verify package contents
         run: npm pack --dry-run

@@ -29,6 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A manual run on a branch with "dry run" unchecked satisfies neither
+      # the Publish condition nor the Dry run condition: every check would
+      # pass, nothing would publish, and the run would finish green. Refuse it
+      # up front instead.
+      - name: Refuse a non-dry-run on anything but a version tag
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true && !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "Nothing to publish from a branch: check 'dry run', or push a v* tag." >&2
+          exit 1
+
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -52,10 +62,10 @@ jobs:
         run: npm run size
 
       - name: Validate published package
-        run: npx publint
+        run: npx --no-install publint
 
       - name: Validate published types
-        run: npx @arethetypeswrong/cli --pack
+        run: npx --no-install attw --pack
 
       - name: Confirm the tag matches package.json
         if: startsWith(github.ref, 'refs/tags/v')
@@ -68,6 +78,8 @@ jobs:
           fi
           echo "Publishing $PKG"
 
+      # On a tag push `inputs` is empty, so `inputs.dry_run != true` holds;
+      # the same condition lets a workflow_dispatch aimed at a tag publish too.
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
         run: npm publish --provenance --access public
