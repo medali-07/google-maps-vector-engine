@@ -63,8 +63,12 @@ const mvtSource = new MVTSource(map, {
   url: 'https://tiles.example.com/{z}/{x}/{y}.pbf',
 
   getIDForLayerFeature: (feature) => {
-    // Try multiple ID fields with fallback
-    return feature.properties.objectid || feature.properties.fid || feature.id || `fallback_${Date.now()}`;
+    // Try several id fields, then fall back. Note the String()/Number()
+    // coercion: a property can be a boolean, and a boolean is never a usable
+    // id - the library's own default rejects them for the same reason.
+    const candidate = feature.properties.objectid ?? feature.properties.fid ?? feature.id;
+    if (typeof candidate === 'string' || typeof candidate === 'number') return candidate;
+    return `fallback_${String(feature.properties.name ?? 'unknown')}`;
   },
 
   // Or specify default property
@@ -85,7 +89,7 @@ const mvtSource = new MVTSource(map, {
     if (!ctx) return;
 
     // Glow effect for important features
-    if (feature.properties.importance > 8) {
+    if (Number(feature.properties.importance ?? 0) > 8) {
       ctx.shadowColor = 'yellow';
       ctx.shadowBlur = 10;
       ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
@@ -109,25 +113,25 @@ const mvtSource = new MVTSource(map, {
 ### Complex Data-Driven Styling
 
 ```typescript
-const styleFunction = (feature) => {
+const styleFunction: FeatureStyleFunction = (feature) => {
   const { population_density, land_use, importance } = feature.properties;
 
   // Base style by land use
-  const baseColors = {
+  const baseColors: Record<string, string> = {
     residential: 'rgba(255, 255, 0, 0.4)',
     commercial: 'rgba(255, 0, 255, 0.4)',
     industrial: 'rgba(0, 255, 255, 0.4)',
   };
 
   // Modify opacity based on density
-  const opacity = Math.min(0.8, 0.3 + (population_density / 1000) * 0.5);
-  const baseColor = baseColors[land_use] || 'rgba(200, 200, 200, 0.3)';
+  const opacity = Math.min(0.8, 0.3 + (Number(population_density ?? 0) / 1000) * 0.5);
+  const baseColor = baseColors[String(land_use)] || 'rgba(200, 200, 200, 0.3)';
   const color = baseColor.replace(/[\d\.]+\)$/, `${opacity})`);
 
   return {
     fillStyle: color,
     strokeStyle: 'rgba(100, 100, 100, 0.8)',
-    lineWidth: importance > 5 ? 2 : 1,
+    lineWidth: Number(importance ?? 0) > 5 ? 2 : 1,
     selected: {
       fillStyle: 'rgba(255, 140, 0, 0.8)',
       strokeStyle: 'rgba(255, 100, 0, 1)',
@@ -142,8 +146,8 @@ const styleFunction = (feature) => {
 ```typescript
 let animationFrame = 0;
 
-const animatedStyle = (feature) => {
-  const baseHue = feature.properties.category_id * 60;
+const animatedStyle: FeatureStyleFunction = (feature) => {
+  const baseHue = Number(feature.properties.category_id ?? 0) * 60;
   const animatedHue = (baseHue + animationFrame) % 360;
 
   return {
@@ -166,13 +170,13 @@ function startAnimation() {
 ### Multi-Criteria Filtering
 
 ```typescript
-const complexFilter = (feature, tileContext) => {
+const complexFilter: FilterFunction = (feature, tileContext) => {
   const { status, visible, date_created, population, area, category, type } = feature.properties;
 
   // Basic requirements
   const isActive = status === 'active';
   const isVisible = visible !== false;
-  const hasData = population !== null && area > 0;
+  const hasData = population !== null && Number(area ?? 0) > 0;
 
   // Special rules by type
   if (category === 'priority') return isActive;
@@ -187,9 +191,9 @@ mvtSource.setFilter(complexFilter);
 ### Dynamic Zoom-Based Filtering
 
 ```typescript
-const zoomBasedFilter = (feature, tileContext) => {
-  const currentZoom = map.getZoom();
-  const importance = feature.properties.importance || 0;
+const zoomBasedFilter: FilterFunction = (feature, tileContext) => {
+  const currentZoom = map.getZoom() ?? 0;
+  const importance = Number(feature.properties.importance ?? 0);
 
   // Show more features at higher zoom
   if (currentZoom >= 15) return importance >= 1;
@@ -228,6 +232,9 @@ class MVTSourceManager {
 }
 
 // Usage
+declare const boundariesSource: MVTSource;
+declare const roadsSource: MVTSource;
+
 const manager = new MVTSourceManager();
 manager.addSource(boundariesSource);
 manager.addSource(roadsSource);
@@ -238,7 +245,18 @@ manager.setGlobalSelection(['feature1', 'feature2']);
 
 ### Complex Click Handling
 
+`MVTMouseEvent` does not carry the originating DOM event, so modifier keys are
+not reachable from `onClick`. Record them from a map listener, which fires for
+the same click:
+
 ```typescript
+let lastModifiers = { ctrlKey: false, shiftKey: false };
+
+map.addListener('click', (event: google.maps.MapMouseEvent) => {
+  const dom = event.domEvent as MouseEvent | undefined;
+  lastModifiers = { ctrlKey: Boolean(dom?.ctrlKey), shiftKey: Boolean(dom?.shiftKey) };
+});
+
 const mvtSource = new MVTSource(map, {
   url: 'https://tiles.example.com/{z}/{x}/{y}.pbf',
 
@@ -246,8 +264,11 @@ const mvtSource = new MVTSource(map, {
     if (!event.feature) return;
 
     const { type, id } = event.feature.properties;
-    const isCtrlClick = event.originalEvent.ctrlKey;
-    const isShiftClick = event.originalEvent.shiftKey;
+
+    // MVTMouseEvent carries no reference to the originating DOM event, so
+    // modifier keys have to come from a separate map listener. Record them
+    // there and read them here.
+    const { ctrlKey: isCtrlClick, shiftKey: isShiftClick } = lastModifiers;
 
     // Different actions by feature type
     switch (type) {
@@ -278,19 +299,28 @@ const mvtSource = new MVTSource(map, {
 
 ### Select by Criteria
 
+There is no public iterator over every loaded feature — a source only holds
+what is currently in view, so such a list would be a moving target. Build the
+index yourself as tiles are parsed: the style function sees every feature.
+
 ```typescript
-function selectByCategory(category: string) {
-  const matchingFeatures: string[] = [];
+const byCategory = new Map<string, Set<string | number>>();
 
-  Object.values(mvtSource.mVTLayers).forEach((layer) => {
-    Object.values(layer._mVTFeatures).forEach((feature) => {
-      if (feature.properties.category === category) {
-        matchingFeatures.push(feature.featureId);
-      }
-    });
-  });
+const indexingStyle: FeatureStyleFunction = (feature) => {
+  const category = String(feature.properties.category ?? 'none');
+  const id = feature.id ?? feature.properties.fid;
 
-  mvtSource.setSelection(matchingFeatures);
+  if (id !== undefined) {
+    const bucket = byCategory.get(category) ?? new Set();
+    bucket.add(id as string | number);
+    byCategory.set(category, bucket);
+  }
+
+  return DefaultStyles.accessible();
+};
+
+function selectByCategory(category: string): void {
+  mvtSource.setSelection([...(byCategory.get(category) ?? [])]);
 }
 
 function updateStyleByProperty(propertyName: string, styles: Record<any, any>) {
@@ -336,7 +366,9 @@ map.addListener('bounds_changed', async () => {
   const manifest = await getDynamicManifest(region);
 
   if (manifest) {
-    mvtSource.options.tileAvailabilityManifest = manifest;
+    // `mvtSource.options` has never existed. The manifest is replaced through
+    // the setter, which also re-resolves it if it is a function.
+    await mvtSource.setTileAvailabilityManifest(manifest);
   }
 });
 ```

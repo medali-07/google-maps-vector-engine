@@ -29,7 +29,7 @@
 ```typescript
 import { MVTSource, DefaultStyles } from 'google-maps-vector-engine';
 
-const map = new google.maps.Map(document.getElementById('map'), {
+const map = new google.maps.Map(document.getElementById('map') as HTMLElement, {
   center: { lat: 46.52, lng: 6.57 },
   zoom: 9,
 });
@@ -73,7 +73,7 @@ function cleanup() {
 ### Country Selection
 
 ```typescript
-const config = {
+const config: MVTSourceOptions = {
   url: 'https://boundaries.example.com/countries/{z}/{x}/{y}.pbf',
   visibleLayers: ['countries'],
   setSelectedOnClick: true,
@@ -98,10 +98,13 @@ const config = {
 
 const countrySource = new MVTSource(map, config);
 
-function showCountryInfo(name, population) {
-  document.getElementById('info').innerHTML = `
-    <h3>${name}</h3>
-    <p>Population: ${population.toLocaleString()}</p>
+function showCountryInfo(name: unknown, population: unknown): void {
+  const info = document.getElementById('info');
+  if (!info) return;
+
+  info.innerHTML = `
+    <h3>${String(name)}</h3>
+    <p>Population: ${Number(population).toLocaleString()}</p>
   `;
 }
 ```
@@ -113,7 +116,7 @@ const municipalitySource = new MVTSource(map, {
   url: 'https://municipal.tiles.com/{z}/{x}/{y}.pbf',
 
   style: (feature) => {
-    const isUrban = feature.properties.population_density > 1000;
+    const isUrban = Number(feature.properties.population_density ?? 0) > 1000;
     return {
       fillStyle: isUrban ? 'rgba(255, 100, 100, 0.4)' : 'rgba(100, 255, 100, 0.4)',
       strokeStyle: isUrban ? '#cc0000' : '#00cc00',
@@ -130,11 +133,14 @@ const municipalitySource = new MVTSource(map, {
 });
 
 function updateSelectedList() {
+  const list = document.getElementById('selected-list');
+  if (!list) return;
+
   const selected = municipalitySource.getSelectedFeatures();
-  document.getElementById('selected-list').innerHTML = selected
+  list.innerHTML = selected
     .map(
       (feature) => `
-    <li>${feature.properties.name} (Pop: ${feature.properties.population.toLocaleString()})</li>
+    <li>${String(feature.properties.name)} (Pop: ${Number(feature.properties.population).toLocaleString()})</li>
   `,
     )
     .join('');
@@ -147,13 +153,13 @@ function updateSelectedList() {
 
 ```typescript
 // Load population data
-const populationData = await fetch('/api/population-data').then((r) => r.json());
+const populationData = await fetch('/api/population-data').then((r: Response) => r.json());
 
 const choroplethSource = new MVTSource(map, {
   url: 'https://boundaries.tiles.com/{z}/{x}/{y}.pbf',
 
   style: (feature) => {
-    const population = populationData[feature.properties.id] || 0;
+    const population = populationData[String(feature.properties.id)] || 0;
 
     let color;
     if (population > 1000000) color = 'rgba(165, 0, 38, 0.7)';
@@ -173,15 +179,15 @@ const choroplethSource = new MVTSource(map, {
   onClick: (event) => {
     if (event.feature) {
       const props = event.feature.properties;
-      const population = populationData[props.id] || 0;
+      const population = populationData[String(props.id)] || 0;
       showPopup(event.latLng, props.name, population);
     }
   },
 });
 
-function showPopup(position, name, population) {
+function showPopup(position: google.maps.LatLng, name: unknown, population: unknown): void {
   new google.maps.InfoWindow({
-    content: `<h4>${name}</h4><p>Population: ${population.toLocaleString()}</p>`,
+    content: `<h4>${String(name)}</h4><p>Population: ${Number(population).toLocaleString()}</p>`,
     position,
   }).open(map);
 }
@@ -199,7 +205,7 @@ class RealTimeVisualization {
     this.mvtSource = new MVTSource(map, {
       url: tileUrl,
       style: (feature) => {
-        const value = this.currentData[feature.properties.id] || 0;
+        const value = this.currentData[String(feature.properties.id)] || 0;
         const intensity = Math.min(value / 100, 1);
         return {
           fillStyle: `rgba(255, ${255 * (1 - intensity)}, 0, 0.6)`,
@@ -236,8 +242,9 @@ class FeatureSearch {
     this.mvtSource = new MVTSource(map, {
       url,
       style: (feature) => {
-        const isResult = this.searchResults.includes(feature.properties.id);
-        const isSelected = this.mvtSource.isFeatureSelected(feature.properties.id);
+        const id = String(feature.properties.id);
+        const isResult = this.searchResults.includes(id);
+        const isSelected = this.mvtSource.isFeatureSelected(id);
 
         if (isSelected) {
           return { fillStyle: 'rgba(255, 140, 0, 0.8)', lineWidth: 3 };
@@ -254,14 +261,17 @@ class FeatureSearch {
     const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
     const results = await response.json();
 
-    this.searchResults = results.map((r) => r.id);
+    this.searchResults = (results as { id: string }[]).map((r) => r.id);
     this.mvtSource.redrawAllTiles();
 
     this.displayResults(results);
   }
 
   private displayResults(results: any[]) {
-    document.getElementById('search-results').innerHTML = `
+    const panel = document.getElementById('search-results');
+    if (!panel) return;
+
+    panel.innerHTML = `
       <h4>${results.length} Results</h4>
       ${results
         .map(
@@ -328,7 +338,7 @@ import { MVTSource } from 'google-maps-vector-engine';
 
 export function useVectorTiles(map: google.maps.Map | null, url: string, options = {}) {
   const mvtSourceRef = useRef<MVTSource | null>(null);
-  const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
+  const [selectedFeatures, setSelectedFeatures] = useState<(string | number)[]>([]);
 
   useEffect(() => {
     if (!map) return;
@@ -371,7 +381,7 @@ function MapComponent() {
 
   return (
     <div>
-      <div ref={mapRef => {
+      <div ref={(mapRef: HTMLDivElement | null) => {
         if (mapRef && !map) {
           setMap(new google.maps.Map(mapRef, {
             center: { lat: 46.52, lng: 6.57 },
@@ -391,11 +401,12 @@ function MapComponent() {
 
 ```typescript
 import { ref, onMounted, onUnmounted, watch } from 'vue';
+import type { Ref } from 'vue';
 import { MVTSource } from 'google-maps-vector-engine';
 
 export function useVectorTiles(map: Ref<google.maps.Map | null>, url: string, options = {}) {
   const mvtSource = ref<MVTSource | null>(null);
-  const selectedFeatures = ref<string[]>([]);
+  const selectedFeatures = ref<(string | number)[]>([]);
 
   const initializeSource = () => {
     if (!map.value) return;
@@ -438,13 +449,13 @@ class MemoryEfficientViewer {
     this.mvtSource = new MVTSource(map, {
       url: `${baseUrl}/{z}/{x}/{y}.pbf`,
       cache: true,
-      visibleLayers: this.getLayersForZoom(map.getZoom()),
+      visibleLayers: this.getLayersForZoom(map.getZoom() ?? 0),
       style: DefaultStyles.minimal(),
     });
 
     // Update layers based on zoom
     map.addListener('zoom_changed', () => {
-      const layers = this.getLayersForZoom(map.getZoom());
+      const layers = this.getLayersForZoom(map.getZoom() ?? 0);
       this.mvtSource.setVisibleLayers(layers);
     });
   }
@@ -499,15 +510,17 @@ const mvtSourceWithDynamicManifest = new MVTSource(map, {
   cache: true,
 });
 
-// Update manifest for different regions
+// Update manifest for different regions. Note this acts on the source
+// declared above at top level - the one inside the `if` is scoped to it.
+declare function calculateRegionFromBounds(bounds?: google.maps.LatLngBounds): string;
+
 map.addListener('bounds_changed', async () => {
   const bounds = map.getBounds();
   const region = calculateRegionFromBounds(bounds);
 
-  const regionManifest = await fetch(`/api/manifest/${region}`).then((r) => r.json());
+  const regionManifest = (await fetch(`/api/manifest/${region}`).then((r: Response) => r.json())) as TileManifest;
 
-  await mvtSource.setTileAvailabilityManifest(regionManifest);
-  await mvtSource.refreshManifest();
+  await mvtSourceWithDynamicManifest.setTileAvailabilityManifest(regionManifest);
 });
 ```
 
@@ -521,7 +534,8 @@ class LazyVectorTiles {
   constructor(private map: google.maps.Map) {
     this.observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
-        const config = JSON.parse(entry.target.dataset.tileConfig || '{}');
+        const element = entry.target as HTMLElement;
+        const config = JSON.parse(element.dataset.tileConfig || '{}');
         if (entry.isIntersecting) {
           this.loadTiles(config.id, config.url, config.options);
         } else {

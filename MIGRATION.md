@@ -105,6 +105,8 @@ It hardcoded French administrative divisions (`communes`, `departments`,
 France. Build the configuration directly:
 
 ```ts
+declare const baseUrl: string;
+
 const source = new MVTSource(map, {
   url: `${baseUrl}/communes/{z}/{x}/{y}.pbf`,
   visibleLayers: ['communes'],
@@ -187,8 +189,10 @@ const stop = source.on('tileerror', ({ tileId, status }) => {
   console.warn(`Tile ${tileId} failed`, status);
 });
 
-source.on('selectionchange', ({ selected, added, removed }) => { ... });
-source.once('load', () => { ... });
+source.on('selectionchange', ({ selected, added, removed }) => {
+  console.log(selected.length, 'selected', added, removed);
+});
+source.once('load', () => console.log('first viewport ready'));
 
 stop(); // or source.off('tileerror', listener)
 ```

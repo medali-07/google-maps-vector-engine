@@ -47,8 +47,9 @@
     "format": "prettier --write \"**/*.{ts,js,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check",
-    "size": "size-limit"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:docs",
+    "size": "size-limit",
+    "check:docs": "node scripts/check-docs.mjs"
   },
   "keywords": [
     "google-maps",
