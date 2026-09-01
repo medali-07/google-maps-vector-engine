@@ -1,30 +1,47 @@
 {
   "compilerOptions": {
-    "target": "ES2018",
+    "target": "ES2020",
     "module": "CommonJS",
-    "lib": ["ES2018", "DOM"],
+    "lib": ["ES2020", "DOM"],
     "outDir": "./dist",
     "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
+    // Verified passing with this off; kept on only so a consumer's unrelated
+    // broken @types package cannot fail our build.
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "declarationMap": true,
+    // Drop @internal members from the emitted .d.ts, so the public surface is
+    // what consumers actually see in IntelliSense.
+    "stripInternal": true,
+    // declarationMap is off: the maps point at ../../src/*.ts, which `files`
+    // does not publish, so every "go to definition" 404s. Publishing src/ just
+    // to satisfy them would undo the package-size work for no real gain.
+    "declarationMap": false,
     "sourceMap": false,
-    "removeComments": true,
+    // removeComments stays FALSE. It was true, which stripped all 89 JSDoc
+    // blocks from the shipped .d.ts - the CHANGELOG called that an
+    // optimization, but it traded the entire consumer IntelliSense experience
+    // for a few KB of a file nobody downloads twice.
+    "removeComments": false,
     "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmitOnError": true,
-    "noImplicitAny": true,
+
+    // `noImplicitAny` / `noImplicitThis` are implied by `strict`.
     "noImplicitReturns": true,
-    "noImplicitThis": true,
-    "noUnusedLocals": false,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
     "noUnusedParameters": false
+
+    // Deferred, with measured cost against the current tree:
+    //   "noUncheckedIndexedAccess"   39 errors - enable during the Phase 2 split
+    //   "exactOptionalPropertyTypes"  4 errors - enable with the Phase 4 type work
+    //   "verbatimModuleSyntax"                 - blocked while `module` is CommonJS
   },
   "include": ["index.ts", "src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts"]

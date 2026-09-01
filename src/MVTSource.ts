@@ -5,23 +5,41 @@ import { MVTFeature } from './MVTFeature';
 import { Mercator } from './Mercator';
 import { ColorUtils } from './ColorUtils';
 import { createLogger, debugLogger } from './DebugLogger';
-// @ts-ignore - Turf types have module resolution issues
-import { polygon, buffer, intersect, union, Feature, Polygon, MultiPolygon, Properties } from '@turf/turf';
+import type { GeometryMerger } from './geojson/GeometryMerger';
+import { StyleResolver, DEFAULT_COLORS } from './style/StyleResolver';
+import { TileLoader } from './tiles/TileLoader';
+import { RedrawScheduler } from './render/RedrawScheduler';
+import { EventEmitter } from './events/EventEmitter';
+import { assertOption } from './errors';
+import { FrameThrottle } from './render/FrameThrottle';
+import {
+  DEFAULT_MAX_PIXEL_RATIO,
+  clearTileCanvas,
+  createTileCanvas,
+  getTileContext2D,
+  resolvePixelRatio,
+} from './render/TileCanvas';
 import {
   MVTSourceOptions,
   TileContext,
   TileCoord,
   MVTMouseEvent,
   MouseEventOptions,
+  FeatureProperties,
+  asFeatureProperties,
   FeatureStyle,
   FeatureStyleFunction,
   FilterFunction,
-  GeometryType,
+  StyleContext,
   GeoJSONFeature,
   FeatureReplacementFunction,
   FeatureSelectionCallback,
   TileManifest,
   TileAvailabilitySource,
+  MVTSourceEvents,
+  MVTSourceStats,
+  SelectionOptions,
+  ValidatableOptions,
 } from './types';
 
 /**
@@ -33,10 +51,10 @@ import {
  * - Advanced styling with selection and hover states
  * - Event handling and GeoJSON overlay support
  */
-export class MVTSource implements google.maps.MapType {
+export class MVTSource<TProps extends object = FeatureProperties> implements google.maps.MapType {
   public map: google.maps.Map;
   public tileSize: google.maps.Size;
-  public mVTLayers: Record<string, MVTLayer> = {};
+  public mVTLayers: Record<string, MVTLayer<TProps>> = {};
   public loadedTilesLen = 0;
   public name: string | null = null;
   public alt: string | null = null;
@@ -46,6 +64,16 @@ export class MVTSource implements google.maps.MapType {
   public radius: number = 6378137;
 
   private logger = createLogger('MVTSource');
+  /**
+   * The GeoJSON merge subsystem, loaded on first use.
+   *
+   * It is the only thing in the library that pulls in Turf, and it only runs
+   * when a selected feature spans several tiles and no `getReplacementFeature`
+   * was supplied. Importing it eagerly put that whole dependency in front of
+   * every consumer, including the ones who never touch GeoJSON overlays.
+   */
+  private _geometryMerger: GeometryMerger | null = null;
+  private _geometryMergerLoad: Promise<GeometryMerger> | null = null;
 
   // Core configuration
   private _url: string;
@@ -63,79 +91,223 @@ export class MVTSource implements google.maps.MapType {
   private _multipleSelection = false;
 
   // Feature state management
-  private _featureIndex: Map<string | number, MVTFeature> = new Map();
+  private _featureIndex: Map<string | number, MVTFeature<TProps>> = new Map();
   private _selectedFeatureIds: Set<string | number> = new Set();
   private _hoveredFeatureIds: Set<string | number> = new Set();
 
-  // Tile management
-  private _tilesDrawn: Record<string, TileContext> = {};
+  /** Bumped on every selection mutation, so deferred work can detect that the
+   *  selection changed underneath it. */
+  private _selectionVersion = 0;
+
+  // Tile management.
+  //
+  // Caches the *decoded tile* only. It used to hold the whole TileContext,
+  // which pinned a detached 256x256 canvas per entry (~26MB at the 100-entry
+  // limit) and let drawTile hand the same DOM node out twice.
+  private _tilesDrawn: Record<string, VectorTile> = {};
   private _visibleTiles: Record<string, TileContext> = {};
+
+  /** Canvas nodes currently handed to Google Maps, mapped to their tile id.
+   *  The same tile id may be mounted more than once at low zoom, where the
+   *  world repeats horizontally. */
+  private _mountedTiles: Map<Element, string> = new Map();
+
+  /** Tile ids that have completed a fetch (successfully or not) for the
+   *  current visible set. Drives tileLoaded(). */
+  private _loadedTileIds: Set<string> = new Set();
+
+  private _disposed = false;
 
   // GeoJSON overlay management
   private _geoJSONOverlays: Record<string | number, google.maps.Data.Feature> = {};
-  private _replacedFeatures: Record<string | number, GeoJSONFeature> = {};
-  private _getReplacementFeature: FeatureReplacementFunction | undefined;
-  private _featureSelectionCallback: FeatureSelectionCallback | undefined;
+
+  /** Reverse of _geoJSONOverlays, preserving the feature id's original type. */
+  private _overlayToFeatureId: Map<google.maps.Data.Feature, string | number> = new Map();
+  private _replacedFeatures: Record<string | number, GeoJSONFeature<TProps>> = {};
+  private _getReplacementFeature: FeatureReplacementFunction<TProps> | undefined;
+  private _featureSelectionCallback: FeatureSelectionCallback<TProps> | undefined;
   private _pendingReplacementRequests: Map<string | number, AbortController> = new Map();
 
   // Event handling
-  private _onClickCallback: ((event: MVTMouseEvent) => void) | undefined;
-  private _onMouseHoverCallback: ((event: MVTMouseEvent) => void) | undefined;
+  private _onClickCallback: ((event: MVTMouseEvent<TProps>) => void) | undefined;
+  private _onMouseHoverCallback: ((event: MVTMouseEvent<TProps>) => void) | undefined;
   private _toggleSelection = true;
   private _setSelectedOnClick = true;
   private _limitToFirstVisibleLayer = false;
   private _hoverDelay = 0;
-  private event: MVTMouseEvent | null = null;
+  private event: MVTMouseEvent<TProps> | null = null;
+
+  // Rendering configuration
+  private _maxPixelRatio: number = DEFAULT_MAX_PIXEL_RATIO;
+  private _pixelRatio = 1;
+  private _hoverCursor: string | false = 'pointer';
+  private _opacity = 1;
+  private _visible = true;
+
+  /** Withdraws this source's debug request on dispose. */
+  private _releaseDebug: (() => void) | null = null;
+  // Declared without an initializer: referencing the static here reads it
+  // before its declaration further down the class body, which the declaration
+  // build rejects with TS2729. The constructor always assigns it anyway.
+  private _fadeInDuration: number;
+  /** Canvases still held transparent awaiting their first content. Tracked
+   *  explicitly: using `style.opacity === '0'` as the marker latched every
+   *  tile invisible after `setOpacity(0)`, because a canvas legitimately at
+   *  opacity 0 was indistinguishable from one waiting on the fade-in. */
+  private _pendingReveal = new WeakSet<HTMLCanvasElement>();
+
+  /** Cursor the map had before we overrode it, restored when hover ends. */
+  private _cursorOverridden = false;
+
+  /** Frame-aligned gate in front of the hover hit test. */
+  private _hoverThrottle!: FrameThrottle<MVTMouseEvent<TProps>>;
 
   // Event listener references for cleanup
   private _eventListeners: google.maps.MapsEventListener[] = [];
 
-  // Tile availability manifest
-  private _tileAvailabilityManifest?: TileAvailabilitySource;
-  private _resolvedManifest?: TileManifest;
+  private _events = new EventEmitter<MVTSourceEvents<TProps>>();
+
+  /** True once `load` has fired, so it fires exactly once per source. */
+  private _hasEmittedLoad = false;
+
+  /** Guards `idle`, which must fire on the transition into idle, not per tile. */
+  private _wasIdle = false;
 
   // Batched redraw system for smooth rendering
-  private _pendingRedraws: Set<string> = new Set();
-  private _redrawDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly REDRAW_DEBOUNCE_MS = 16;
+  private _redraws: RedrawScheduler = new RedrawScheduler((tileIds) => this._repaintTiles(tileIds));
 
-  private _styleCache: Map<string, FeatureStyle> = new Map();
-  private _styleCacheVersion: number = 0;
-  private static readonly MAX_STYLE_CACHE_SIZE = 1000;
+  private _styleResolver!: StyleResolver;
 
   // Cache size limits to prevent memory leaks
   private static readonly MAX_TILES_CACHE_SIZE = 100;
-  private static readonly MAX_VISIBLE_TILES_SIZE = 50;
 
-  // Default color palette for consistency
-  private static readonly DEFAULT_COLORS = {
-    POINT_FILL: 'rgba(49,79,79,1)',
-    LINE_STROKE: 'rgba(136, 86, 167, 1)',
-    POLYGON_FILL: 'rgba(188, 189, 220, 0.5)',
-    POLYGON_STROKE: 'rgba(136, 86, 167, 1)',
-    SELECTED_POINT: 'rgba(255,255,0,0.8)',
-    SELECTED_LINE: 'rgba(255,25,0,0.8)',
-    SELECTED_POLYGON_FILL: 'rgba(255,140,0,0.4)',
-    SELECTED_POLYGON_STROKE: 'rgba(255,140,0,1)',
-    DEBUG_STROKE: '#000000',
-    DEBUG_FILL: '#FFFF00',
-    DEBUG_TEXT_BG: 'rgba(255, 255, 255, 0.8)',
-    DEBUG_TEXT: '#000000',
-  };
+  /** Default tile fade-in, in milliseconds. */
+  private static readonly DEFAULT_FADE_IN_MS = 150;
+
+  /** Google Maps' own zoom range, used unless the caller narrows it. */
+  private static readonly DEFAULT_MIN_ZOOM = 0;
+  private static readonly DEFAULT_MAX_ZOOM = 22;
+
+  private _tileLoader!: TileLoader;
+
+  /** Pending tileLoaded() poll timers, cancelled on dispose. */
+  private _tileLoadedTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+
+  /**
+   * Resolvers for tileLoaded() promises still waiting.
+   *
+   * dispose() cancels the poll timers, so the `_disposed` check inside the
+   * poll could never run in the one case it was written for: an in-flight
+   * tileLoaded() simply hung forever. They are settled explicitly instead.
+   */
+  private _tileLoadedResolvers: Set<(loaded: boolean) => void> = new Set();
+
+  /** Deferred timers from _zoomChanged and setStyle, cancelled on dispose. */
+  private _deferredTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+
+  /** Pending hover-delay timer, cancelled on dispose. */
+  private _hoverTimer: ReturnType<typeof setTimeout> | null = null;
 
   public style: FeatureStyle | FeatureStyleFunction;
 
-  constructor(map: google.maps.Map, options: MVTSourceOptions) {
+  /**
+   * Reject a configuration that cannot work, at construction rather than as a
+   * blank map some minutes later.
+   *
+   * `this._url = options.url || ''` used to accept an empty string, nothing
+   * checked that the template carried `{z}/{x}/{y}`, and a non-positive
+   * `tileSize` produced a zero-sized canvas with no complaint.
+   */
+  private static _validate(map: google.maps.Map, options: ValidatableOptions): void {
+    assertOption(
+      map !== null && map !== undefined && typeof map === 'object',
+      'map',
+      'MVTSource requires a google.maps.Map as its first argument.',
+    );
+    assertOption(
+      typeof (map as { overlayMapTypes?: unknown }).overlayMapTypes === 'object',
+      'map',
+      'The first argument does not look like a google.maps.Map: it has no overlayMapTypes. ' +
+        'Make sure the Maps JavaScript API has finished loading before constructing an MVTSource.',
+    );
+
+    assertOption(
+      options !== null && options !== undefined && typeof options === 'object',
+      'options',
+      'MVTSource requires an options object with at least a `url`.',
+    );
+
+    assertOption(
+      typeof options.url === 'string' && options.url.trim().length > 0,
+      'url',
+      'options.url is required, e.g. "https://tiles.example.com/{z}/{x}/{y}.pbf".',
+    );
+
+    const missing = (['{z}', '{x}', '{y}'] as const).filter((token) => !options.url.includes(token));
+    assertOption(
+      missing.length === 0,
+      'url',
+      `options.url is missing ${missing.join(', ')}. ` +
+        'It must be a template such as "https://tiles.example.com/{z}/{x}/{y}.pbf".',
+    );
+
+    if (options.tileSize !== undefined) {
+      assertOption(
+        Number.isFinite(options.tileSize) && options.tileSize > 0,
+        'tileSize',
+        `options.tileSize must be a positive number, received ${String(options.tileSize)}.`,
+      );
+    }
+
+    if (options.maxPixelRatio !== undefined) {
+      assertOption(
+        Number.isFinite(options.maxPixelRatio) && options.maxPixelRatio >= 1,
+        'maxPixelRatio',
+        `options.maxPixelRatio must be at least 1, received ${String(options.maxPixelRatio)}. ` +
+          'Values below 1 would render beneath CSS resolution.',
+      );
+    }
+
+    if (options.minZoom !== undefined && options.maxZoom !== undefined) {
+      assertOption(
+        options.minZoom <= options.maxZoom,
+        'minZoom',
+        `options.minZoom (${options.minZoom}) cannot exceed options.maxZoom (${options.maxZoom}).`,
+      );
+    }
+
+    if (options.style !== undefined) {
+      assertOption(
+        typeof options.style === 'function' || typeof options.style === 'object',
+        'style',
+        'options.style must be a FeatureStyle object or a function returning one.',
+      );
+    }
+  }
+
+  constructor(map: google.maps.Map, options: MVTSourceOptions<TProps>) {
+    MVTSource._validate(map, options);
+
     this.map = map;
-    this._url = options.url || '';
+    this._url = options.url;
     this._sourceMaxZoom = options.sourceMaxZoom || false;
     this._debug = options.debug || false;
     this._defaultFeatureId = options.defaultFeatureId || 'fid';
-    this._getIDForLayerFeature = options.getIDForLayerFeature || this.defaultGetIDForLayerFeature;
+    // Bound: MVTLayer stores this and calls it as its own method, so an
+    // unbound reference arrives with `this` pointing at the layer, where
+    // neither _extractFeatureProperty nor _defaultFeatureId exists. It threw
+    // on the first feature of every tile whenever no extractor was supplied -
+    // which is the default configuration - and TileLoader's catch turned that
+    // into a silent retry, so the tile simply never appeared.
+    this._getIDForLayerFeature = options.getIDForLayerFeature || this.defaultGetIDForLayerFeature.bind(this);
 
     // Initialize debug logger
     this.logger = createLogger('MVTSource');
-    debugLogger.setDebug(this._debug);
+    // Register interest rather than assigning a global flag. setDebug(false)
+    // from a second source used to switch debugging off for the first one.
+    if (this._debug) {
+      this._releaseDebug = debugLogger.requestDebug();
+    }
 
     this._visibleLayers = options.visibleLayers;
     this._xhrHeaders = options.xhrHeaders || {};
@@ -147,9 +319,6 @@ export class MVTSource implements google.maps.MapType {
     this._getReplacementFeature = options.getReplacementFeature;
     this._featureSelectionCallback = options.featureSelectionCallback;
 
-    // Tile availability manifest configuration
-    this._tileAvailabilityManifest = options.tileAvailabilityManifest;
-
     // Event handling configuration
     this._onClickCallback = options.onClick;
     this._onMouseHoverCallback = options.onMouseHover;
@@ -159,15 +328,59 @@ export class MVTSource implements google.maps.MapType {
     this._limitToFirstVisibleLayer = options.limitToFirstVisibleLayer || false;
     this._hoverDelay = options.hoverDelay || 0;
 
+    // Rendering configuration
+    this._maxPixelRatio = options.maxPixelRatio ?? DEFAULT_MAX_PIXEL_RATIO;
+    this._pixelRatio = resolvePixelRatio(this._maxPixelRatio);
+    this._hoverCursor = options.hoverCursor !== undefined ? options.hoverCursor : 'pointer';
+    this._fadeInDuration = options.fadeInDuration ?? MVTSource.DEFAULT_FADE_IN_MS;
+
+    // Hover used to run a full hit-test sweep synchronously on every mousemove
+    // when hoverDelay was 0 - the default - which is the main source of jank on
+    // dense tiles. Gate it on a frame instead, or on hoverDelay when one is set.
+    this._hoverThrottle = new FrameThrottle<MVTMouseEvent<TProps>>(
+      (event) => this._runHoverHitTest(event),
+      this._hoverDelay,
+    );
+
     this.tileSize = new google.maps.Size(this._tileSize, this._tileSize);
-    this.style = options.style || this.defaultStyle.bind(this);
+    this.style = options.style || StyleResolver.defaultStyleFor;
+    this._tileLoader = new TileLoader(
+      this._url,
+      this._xhrHeaders,
+      {
+        onResponse: (tileContext, body) => this._onTileResponse(tileContext, body),
+        onSettled: (tileId) => this._markTileLoaded(tileId),
+        onFailed: (tileContext, reason) => {
+          this._drawDebugInfo(tileContext);
+          this._revealTile(tileContext);
+          this._events.emit('tileerror', {
+            tileId: tileContext.id,
+            status: reason.status,
+            error: reason.error,
+          });
+        },
+        isDisposed: () => this._disposed,
+      },
+      options.tileAvailabilityManifest,
+    );
+
+    this._styleResolver = new StyleResolver(this.style, {
+      isSelected: (id) => this._selectedFeatureIds.has(id),
+      isHovered: (id) => this._hoveredFeatureIds.has(id),
+      featureCount: () => this._featureIndex.size,
+    });
     this.name = 'Optimized MVT Layer';
     this.alt = 'Optimized Vector Tile Layer';
-    this.maxZoom = typeof this._sourceMaxZoom === 'number' ? this._sourceMaxZoom : 18;
-    this.minZoom = 6;
+    // maxZoom used to be sourceMaxZoom, which told Google Maps to stop asking
+    // for tiles at exactly the zoom where overzooming was supposed to take
+    // over - so _getParentId and _getOverzoomedPoint could never run and the
+    // option did the opposite of what it advertised. minZoom used to be a
+    // hardcoded 6, so nothing rendered below it and nothing said why.
+    this.maxZoom = options.maxZoom ?? MVTSource.DEFAULT_MAX_ZOOM;
+    this.minZoom = options.minZoom ?? MVTSource.DEFAULT_MIN_ZOOM;
 
     if (options.selectedFeatures) {
-      this.setSelectedFeatures(options.selectedFeatures);
+      this.setSelection(options.selectedFeatures);
     }
 
     const zoomListener = this.map.addListener('zoom_changed', () => {
@@ -180,7 +393,7 @@ export class MVTSource implements google.maps.MapType {
 
     // Initialize manifest asynchronously, but add to map immediately
     // Tile requests will be handled gracefully during manifest loading
-    this._initializeManifest().catch((error) => {
+    this._tileLoader.initializeManifest().catch((error: unknown) => {
       this.logger.warn('Manifest initialization failed:', error);
     });
 
@@ -188,25 +401,68 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
+   * Subscribe to an event.
+   *
+   * Returns an unsubscribe function, so a listener can be dropped without
+   * keeping the original reference:
+   *
+   * ```ts
+   * const stop = source.on('tileerror', ({ tileId, status }) => { ... });
+   * stop();
+   * ```
+   */
+  on<K extends keyof MVTSourceEvents<TProps>>(
+    event: K,
+    listener: (payload: MVTSourceEvents<TProps>[K]) => void,
+  ): () => void {
+    return this._events.on(event, listener);
+  }
+
+  /** Subscribe until the event fires once. */
+  once<K extends keyof MVTSourceEvents<TProps>>(
+    event: K,
+    listener: (payload: MVTSourceEvents<TProps>[K]) => void,
+  ): () => void {
+    return this._events.once(event, listener);
+  }
+
+  /**
+   * Remove a listener, every listener for an event, or all listeners.
+   */
+  off<K extends keyof MVTSourceEvents<TProps>>(
+    event?: K,
+    listener?: (payload: MVTSourceEvents<TProps>[K]) => void,
+  ): void {
+    this._events.off(event, listener);
+  }
+
+  /**
    * Register feature in index for fast lookups
    */
-  registerFeature(feature: MVTFeature): void {
+  /** @internal Index a feature for lookup. Called by the MVTFeature constructor. Not part of the public API. */
+  registerFeature(feature: MVTFeature<TProps>): void {
     this._featureIndex.set(feature.featureId, feature);
   }
 
   /**
    * Unregister feature from index
    */
+  /** @internal Drop a feature from the index. Called when a feature is disposed. Not part of the public API. */
   unregisterFeature(featureId: string | number): void {
     this._featureIndex.delete(featureId);
-    this._selectedFeatureIds.delete(featureId);
+
+    // Hover is transient and viewport-bound, so it goes with the feature.
+    // Selection deliberately does NOT: it is source-level state that must
+    // survive a feature scrolling out of view and coming back. This matters
+    // now that releaseTile() actually disposes off-screen features - clearing
+    // selection here would silently drop it on every pan.
     this._hoveredFeatureIds.delete(featureId);
   }
 
   /**
    * Get feature by ID
    */
-  getFeature(featureId: string | number): MVTFeature | undefined {
+  getFeature(featureId: string | number): MVTFeature<TProps> | undefined {
     return this._featureIndex.get(featureId);
   }
 
@@ -225,7 +481,15 @@ export class MVTSource implements google.maps.MapType {
   private defaultGetIDForLayerFeature(feature: VectorTileFeature): string | number {
     const props = feature.properties;
 
-    // Try configured default property first
+    // The tile's own feature id first. This is the identity field the MVT spec
+    // defines, and the exported MVTUtils.extractFeatureId has always called it
+    // "most reliable" - but this default ignored it entirely and went straight
+    // to the properties, so the library disagreed with its own utility.
+    if (feature.id !== undefined && feature.id !== null) {
+      return feature.id;
+    }
+
+    // Then the configured default property.
     const defaultValue = this._extractFeatureProperty(props, this._defaultFeatureId);
     if (defaultValue !== null) return defaultValue;
 
@@ -236,142 +500,125 @@ export class MVTSource implements google.maps.MapType {
       if (value !== null) return value;
     }
 
-    // Generate random ID as last resort
-    return `feature_${Math.random().toString(36).substring(2, 11)}`;
+    // Last resort: hash the properties. This used to be Math.random(), which
+    // gave the same feature a different id every time its tile was parsed - so
+    // a feature spanning two tiles got two identities, could never be merged
+    // across them, and lost its selection on every redraw.
+    return MVTSource._hashProperties(props);
   }
 
   /**
-   * Initialize tile availability manifest
+   * Stable id for a feature that carries none, derived from its properties.
+   *
+   * Two features with identical properties collide, which is the best that can
+   * be done without an id: they are indistinguishable to this library.
    */
-  private async _initializeManifest(): Promise<void> {
-    if (!this._tileAvailabilityManifest) return;
+  private static _hashProperties(properties: Record<string, unknown>): string {
+    const serialized = JSON.stringify(properties, Object.keys(properties).sort());
 
-    try {
-      if (typeof this._tileAvailabilityManifest === 'function') {
-        this._resolvedManifest = await this._tileAvailabilityManifest();
-        this.logger.info('Manifest loaded from API:', Object.keys(this._resolvedManifest || {}).length, 'zoom levels');
-      } else {
-        this._resolvedManifest = this._tileAvailabilityManifest;
-        this.logger.info(
-          'Manifest loaded from static data:',
-          Object.keys(this._resolvedManifest || {}).length,
-          'zoom levels',
-        );
-      }
-    } catch (error) {
-      this.logger.warn('Failed to load tile availability manifest:', error);
-      this._resolvedManifest = undefined;
-    }
-  }
-
-  /**
-   * Check if a tile is available according to the manifest
-   */
-  private _isTileAvailable(z: number, x: number, y: number): boolean {
-    if (!this._resolvedManifest) {
-      this.logger.log(`No manifest available yet, allowing tile: ${z}/${x}/${y}`);
-      return true; // If no manifest, assume all tiles are available
+    let hash = 0;
+    for (let i = 0; i < serialized.length; i++) {
+      hash = (hash << 5) - hash + serialized.charCodeAt(i);
+      hash |= 0;
     }
 
-    const zoomLevel = z.toString();
-    const xCoordinate = x.toString();
-
-    // Check if zoom level exists in manifest
-    if (!this._resolvedManifest[zoomLevel]) {
-      this.logger.log(`Zoom level ${z} not found in manifest, rejecting tile: ${z}/${x}/${y}`);
-      return false;
-    }
-
-    // Check if x coordinate exists in manifest
-    if (!this._resolvedManifest[zoomLevel][xCoordinate]) {
-      this.logger.log(`X coordinate ${x} not found in manifest for zoom ${z}, rejecting tile: ${z}/${x}/${y}`);
-      return false;
-    }
-
-    // Check if y coordinate falls within any of the available ranges
-    const yRanges = this._resolvedManifest[zoomLevel][xCoordinate];
-    const isAvailable = yRanges.some(([yStart, yEnd]) => y >= yStart && y <= yEnd);
-
-    if (isAvailable) {
-      this.logger.log(`Tile ${z}/${x}/${y} is available according to manifest`);
-    } else {
-      this.logger.log(`Tile ${z}/${x}/${y} not in available Y ranges: ${JSON.stringify(yRanges)}`);
-    }
-
-    return isAvailable;
-  }
-
-  /**
-   * Default styling for features
-   */
-  private defaultStyle(feature: VectorTileFeature): FeatureStyle {
-    const style: FeatureStyle = {};
-
-    switch (feature.type) {
-      case GeometryType.Point:
-        style.fillStyle = MVTSource.DEFAULT_COLORS.POINT_FILL;
-        style.radius = 5;
-        break;
-
-      case GeometryType.LineString:
-        style.strokeStyle = MVTSource.DEFAULT_COLORS.LINE_STROKE;
-        style.lineWidth = 3;
-        break;
-
-      case GeometryType.Polygon:
-        style.fillStyle = MVTSource.DEFAULT_COLORS.POLYGON_FILL;
-        style.strokeStyle = MVTSource.DEFAULT_COLORS.POLYGON_STROKE;
-        style.lineWidth = 1;
-        break;
-    }
-
-    return style;
-  }
-
-  /**
-   * Get selected style for features
-   */
-  private getSelectedStyle(feature: VectorTileFeature): FeatureStyle {
-    switch (feature.type) {
-      case GeometryType.Point:
-        return {
-          fillStyle: MVTSource.DEFAULT_COLORS.SELECTED_POINT,
-          radius: 7,
-        };
-
-      case GeometryType.LineString:
-        return {
-          strokeStyle: MVTSource.DEFAULT_COLORS.SELECTED_LINE,
-          lineWidth: 5,
-        };
-
-      case GeometryType.Polygon:
-        return {
-          fillStyle: MVTSource.DEFAULT_COLORS.SELECTED_POLYGON_FILL,
-          strokeStyle: MVTSource.DEFAULT_COLORS.SELECTED_POLYGON_STROKE,
-          lineWidth: 3,
-        };
-
-      default:
-        return {};
-    }
+    return `feature_${Math.abs(hash)}`;
   }
 
   /**
    * Get tile for Google Maps tile system
    */
+  /**
+   * Part of the `google.maps.MapType` contract. Google Maps calls this; you
+   * should not.
+   */
   getTile(coord: google.maps.Point, zoom: number, ownerDocument: Document): HTMLElement {
     this.logger.log(`Getting tile: ${zoom}/${coord.x}/${coord.y}`);
     const tileContext = this.drawTile(coord, zoom, ownerDocument);
     this._setVisibleTile(tileContext);
+    this._mountedTiles.set(tileContext.canvas, tileContext.id);
+
+    // Keep the idle edge honest. A cache hit already has its content on
+    // screen, so it counts as loaded; a fetch means the source just became
+    // busy. Without the busy edge, a pan that revealed one uncached tile
+    // settled without ever re-firing `idle`, because `_wasIdle` stayed
+    // latched from the previous cycle.
+    if (this._tilesDrawn[tileContext.id]) {
+      this._markTileLoaded(tileContext.id);
+    } else {
+      this._loadedTileIds.delete(tileContext.id);
+      this.loadedTilesLen = this._loadedTileIds.size;
+      this._checkIdle();
+    }
+
     return tileContext.canvas;
   }
 
   /**
-   * Release tile resources
+   * Release a tile that Google Maps has scrolled out of view.
+   *
+   * Google Maps calls this for every tile it discards. Without it nothing was
+   * ever freed: the feature index, each layer's feature map, and the decoded
+   * PBF buffer behind every tile grew for the lifetime of the map.
    */
-  releaseTile(): void {
-    // Implementation for tile cleanup if needed
+  /**
+   * Part of the `google.maps.MapType` contract. Google Maps calls this for
+   * every tile scrolled out of view; you should not.
+   */
+  releaseTile(tile?: Element | null): void {
+    if (!tile) return;
+
+    const tileId = this._mountedTiles.get(tile);
+    if (tileId === undefined) return;
+    this._mountedTiles.delete(tile);
+
+    // The same tile id can be mounted more than once (repeated worlds at low
+    // zoom). Only tear down shared state once the last copy is gone.
+    for (const [canvas, id] of this._mountedTiles.entries()) {
+      if (id === tileId) {
+        // If the released copy is the one _visibleTiles points at, repoint it
+        // at a surviving mount - otherwise every later repaint of this tile
+        // would draw into a detached canvas while the copy still on screen
+        // never updated again. Only the canvas changes: the rest of the
+        // context - the decoded vectorTile above all, without which
+        // redrawTile() and _repaintTiles() refuse to repaint at all - must
+        // carry over.
+        const pointedAt = this._visibleTiles[tileId];
+        if (pointedAt?.canvas === tile && canvas instanceof HTMLCanvasElement) {
+          this._visibleTiles[tileId] = { ...pointedAt, canvas };
+        }
+        this.logger.log(`Released one copy of tile ${tileId}; others still mounted`);
+        return;
+      }
+    }
+
+    this.logger.log(`Releasing tile: ${tileId}`);
+
+    this._tileLoader.abort(tileId);
+    delete this._visibleTiles[tileId];
+
+    for (const [layerName, layer] of Object.entries(this.mVTLayers)) {
+      if (layer.releaseTile(tileId)) {
+        delete this.mVTLayers[layerName];
+      }
+    }
+
+    // With caching off, drop the decoded tile too - it pins the PBF buffer.
+    // With caching on it is deliberately retained, bounded by
+    // MAX_TILES_CACHE_SIZE, which is the point of the option.
+    if (!this._cache) {
+      delete this._tilesDrawn[tileId];
+    }
+
+    // The tile is gone, so its "loaded" mark must go with it - a stale entry
+    // let tileLoaded() report true while a re-requested tile was still being
+    // fetched. And if this tile was the only one still pending, the viewport
+    // just became idle without any settle to notice it.
+    this._loadedTileIds.delete(tileId);
+    this.loadedTilesLen = this._loadedTileIds.size;
+
+    this._redraws.cancel(tileId);
+    this._checkIdle();
   }
 
   /**
@@ -388,12 +635,19 @@ export class MVTSource implements google.maps.MapType {
     }
 
     if (selectedIds.length > 0) {
-      setTimeout(() => {
-        selectedIds.forEach((featureId) => {
-          this._selectedFeatureIds.add(featureId);
-        });
+      const versionAtZoom = this._selectionVersion;
+      const timer = setTimeout(() => {
+        this._deferredTimers.delete(timer);
+        if (this._disposed) return;
+
+        // If the selection changed during the window, the user's intent wins.
+        // Re-adding blindly resurrected features deselected in those 50ms.
+        if (this._selectionVersion !== versionAtZoom) return;
+
+        selectedIds.forEach((featureId) => this._selectedFeatureIds.add(featureId));
         this._scheduleRedraw('all');
       }, 50);
+      this._deferredTimers.add(timer);
     }
   }
 
@@ -401,6 +655,10 @@ export class MVTSource implements google.maps.MapType {
    * Reset MVT layers
    */
   private _resetMVTLayers(): void {
+    // Dispose before dropping. Assigning {} released the layers by reference
+    // only, so every feature's cached geometry leaked on each zoom change and
+    // on every setUrl().
+    Object.values(this.mVTLayers).forEach((layer) => layer.dispose?.());
     this.mVTLayers = {};
     this._featureIndex.clear();
   }
@@ -416,34 +674,31 @@ export class MVTSource implements google.maps.MapType {
    * Set a tile as visible with memory management
    */
   private _setVisibleTile(tileContext: TileContext): void {
-    // Implement cache size limit to prevent memory leaks
-    const visibleTileIds = Object.keys(this._visibleTiles);
-    if (visibleTileIds.length >= MVTSource.MAX_VISIBLE_TILES_SIZE) {
-      // Remove oldest tiles (simple FIFO approach)
-      const tilesToRemove = visibleTileIds.slice(0, visibleTileIds.length - MVTSource.MAX_VISIBLE_TILES_SIZE + 1);
-      tilesToRemove.forEach((tileId) => {
-        delete this._visibleTiles[tileId];
-      });
-    }
-
+    // No FIFO cap here. The previous 50-tile limit evicted genuinely visible
+    // tiles on any viewport above ~1080p (a 4K screen needs ~135), which broke
+    // click and hover across half the map. releaseTile() now bounds this set.
     this._visibleTiles[tileContext.id] = tileContext;
   }
 
   /**
    * Draw a tile
    */
+  /** @internal Build and draw a tile context. Not part of the public API. */
   drawTile(coord: google.maps.Point, zoom: number, ownerDocument: Document): TileContext {
     const id = this.getTileId(zoom, coord.x, coord.y);
-    let tileContext = this._tilesDrawn[id];
+    const cachedTile = this._tilesDrawn[id];
 
-    if (tileContext) {
+    // Always hand back a fresh canvas. A DOM node can only be in one place, so
+    // returning the cached tile's canvas a second time silently detached it
+    // from the first mount point and left that tile permanently blank.
+    const tileContext = this._createTileContext(coord, zoom, ownerDocument);
+
+    if (cachedTile) {
+      this._drawVectorTile(cachedTile, tileContext);
       return tileContext;
     }
 
-    tileContext = this._createTileContext(coord, zoom, ownerDocument);
-    this.loadedTilesLen = 0;
-    this._xhrRequest(tileContext);
-
+    this._tileLoader.fetch(tileContext, this.getTileObject(tileContext.parentId || tileContext.id));
     return tileContext;
   }
 
@@ -460,6 +715,7 @@ export class MVTSource implements google.maps.MapType {
       canvas,
       zoom,
       tileSize: this._tileSize,
+      pixelRatio: this._pixelRatio,
       parentId,
     };
   }
@@ -486,81 +742,88 @@ export class MVTSource implements google.maps.MapType {
    * Create canvas element
    */
   private _createCanvas(ownerDocument: Document, id: string): HTMLCanvasElement {
-    const canvas = ownerDocument.createElement('canvas');
-    canvas.width = this._tileSize;
-    canvas.height = this._tileSize;
-    canvas.id = id;
+    const canvas = createTileCanvas(ownerDocument, id, this._tileSize, this._pixelRatio);
+
+    if (this._fadeInDuration > 0) {
+      // Start transparent and let _revealTile ramp it up once there is
+      // something to show. Without this a slow connection paints a grid of
+      // blank white squares that snap to full detail one by one.
+      canvas.style.opacity = '0';
+      canvas.style.transition = `opacity ${this._fadeInDuration}ms ease-out`;
+      this._pendingReveal.add(canvas);
+    } else if (this._opacity !== 1) {
+      canvas.style.opacity = String(this._opacity);
+    }
+
+    // A tile requested while the source is hidden must not appear on arrival.
+    if (!this._visible) {
+      canvas.style.display = 'none';
+    }
+
     return canvas;
   }
 
   /**
-   * Generate tile ID
+   * Make a tile visible once it has content, fading it in on first paint.
+   *
+   * Subsequent repaints of the same canvas are instant: the tile is already
+   * on screen, so re-running the ramp would make every selection change blink.
    */
+  private _revealTile(tileContext: TileContext): void {
+    if (this._fadeInDuration <= 0) return;
+
+    this._pendingReveal.delete(tileContext.canvas);
+
+    // Ramp to the source's own opacity, not a hardcoded 1, or setOpacity()
+    // would be silently undone by the next tile that finished loading.
+    const target = String(this._opacity);
+    const style = tileContext.canvas.style;
+    if (style.opacity === target) return;
+
+    style.opacity = target;
+  }
+
+  /**
+   * Generate tile ID.
+   *
+   * `x` is wrapped into `[0, 2^zoom)`. Google Maps hands out unwrapped x for
+   * repeated world copies and across the antimeridian, so without this the
+   * stored id never matched the normalized id that hit-testing derives from
+   * `Mercator.getTileAtLatLng` - clicks were dead on every wrapped copy - and
+   * the request URL got a negative or out-of-range x that 404s.
+   */
+  /** @internal Tile id for a coordinate, with x wrapped into the valid range. Not part of the public API. */
   getTileId(zoom: number, x: number, y: number): string {
-    return [zoom, x, y].join(':');
+    const worldTiles = Math.pow(2, zoom);
+    const wrappedX = ((x % worldTiles) + worldTiles) % worldTiles;
+    return [zoom, wrappedX, y].join(':');
   }
 
   /**
    * Parse tile ID to object
    */
+  /** @internal Parse a tile id back into z/x/y. Not part of the public API. */
   getTileObject(id: string): TileCoord {
     const values = id.split(':');
-    return {
-      z: parseInt(values[0]),
-      x: parseInt(values[1]),
-      y: parseInt(values[2]),
-    };
-  }
+    const z = Number.parseInt(values[0], 10);
+    const x = Number.parseInt(values[1], 10);
+    const y = Number.parseInt(values[2], 10);
 
-  /**
-   * Make XHR request for tile data
-   */
-  private _xhrRequest(tileContext: TileContext): void {
-    const id = tileContext.parentId || tileContext.id;
-    const tile = this.getTileObject(id);
-
-    // Check tile availability against manifest
-    if (!this._isTileAvailable(tile.z, tile.x, tile.y)) {
-      this.logger.log(`Tile not available according to manifest: ${tile.z}/${tile.x}/${tile.y}`);
-      this._drawDebugInfo(tileContext);
-      return;
+    if (Number.isNaN(z) || Number.isNaN(x) || Number.isNaN(y)) {
+      throw new Error(`Malformed tile id: "${id}" (expected "z:x:y")`);
     }
 
-    const src = this._url
-      .replace('{z}', tile.z.toString())
-      .replace('{x}', tile.x.toString())
-      .replace('{y}', tile.y.toString());
-
-    this.logger.log(`Requesting tile: ${src}`);
-
-    const xmlHttpRequest = new XMLHttpRequest();
-    xmlHttpRequest.onload = () => {
-      this.logger.log(`Tile response: ${xmlHttpRequest.status} for ${src}`);
-      if (xmlHttpRequest.status === 200 && xmlHttpRequest.response) {
-        this._xhrResponseOk(tileContext, xmlHttpRequest.response);
-      } else {
-        this._drawDebugInfo(tileContext);
-      }
-    };
-
-    xmlHttpRequest.onerror = () => {
-      this.logger.error(`Failed to load tile: ${src}`);
-      this._drawDebugInfo(tileContext);
-    };
-
-    xmlHttpRequest.open('GET', src, true);
-    Object.entries(this._xhrHeaders).forEach(([header, value]) => {
-      xmlHttpRequest.setRequestHeader(header, value);
-    });
-    xmlHttpRequest.responseType = 'arraybuffer';
-    xmlHttpRequest.send();
+    return { z, x, y };
   }
 
   /**
-   * Handle successful XHR response
+   * Decode and draw a tile response.
    */
-  private _xhrResponseOk(tileContext: TileContext, response: ArrayBuffer): void {
-    if (this.map.getZoom() !== tileContext.zoom) {
+  private _onTileResponse(tileContext: TileContext, response: ArrayBuffer): void {
+    // map.getZoom() is fractional during smooth zoom on vector basemaps, so
+    // comparing it directly to the integer tile zoom discarded every response.
+    const currentZoom = this.map.getZoom();
+    if (currentZoom !== undefined && Math.floor(currentZoom) !== tileContext.zoom) {
       return;
     }
 
@@ -585,20 +848,87 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Wait for all visible tiles to load
+   * Record that a tile finished loading, however it finished.
    */
-  async tileLoaded(): Promise<boolean> {
-    const lenVisibleTiles = Object.keys(this._visibleTiles).length;
+  private _markTileLoaded(tileId: string): void {
+    this._loadedTileIds.add(tileId);
+    this.loadedTilesLen = this._loadedTileIds.size;
+    this._checkIdle();
+  }
+
+  /**
+   * Emit `idle` on the transition into idle, and `load` the first time.
+   *
+   * Edge-triggered rather than level-triggered: emitting per settled tile
+   * would fire once per tile in the batch that completes a viewport.
+   */
+  private _checkIdle(): void {
+    const idle = this._allVisibleTilesLoaded();
+
+    if (idle && !this._wasIdle) {
+      this._wasIdle = true;
+      if (!this._hasEmittedLoad) {
+        this._hasEmittedLoad = true;
+        this._events.emit('load', undefined);
+      }
+      this._events.emit('idle', undefined);
+    } else if (!idle) {
+      this._wasIdle = false;
+    }
+  }
+
+  /**
+   * True when every currently visible tile has settled.
+   */
+  private _allVisibleTilesLoaded(): boolean {
+    const visibleIds = Object.keys(this._visibleTiles);
+    if (visibleIds.length === 0) return false;
+    return visibleIds.every((id) => this._loadedTileIds.has(id));
+  }
+
+  /**
+   * Resolve once every visible tile has settled.
+   *
+   * `loadedTilesLen` was only ever assigned 0 and never incremented, so the
+   * old resolve condition was unsatisfiable: each call spawned a self-
+   * recursive setTimeout that ran forever and never settled its promise.
+   *
+   * @param timeoutMs Give up after this long and resolve `false`.
+   */
+  async tileLoaded(timeoutMs = TileLoader.TIMEOUT_MS): Promise<boolean> {
+    if (this._allVisibleTilesLoaded()) return true;
 
     return new Promise((resolve) => {
-      if (lenVisibleTiles && lenVisibleTiles === this.loadedTilesLen) {
-        resolve(true);
-      } else {
-        setTimeout(async () => {
-          const result = await this.tileLoaded();
-          resolve(result);
+      const deadline = Date.now() + timeoutMs;
+
+      const settle = (loaded: boolean): void => {
+        this._tileLoadedResolvers.delete(settle);
+        resolve(loaded);
+      };
+      this._tileLoadedResolvers.add(settle);
+
+      const poll = (): void => {
+        if (this._disposed) {
+          settle(false);
+          return;
+        }
+        if (this._allVisibleTilesLoaded()) {
+          settle(true);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          this.logger.warn('tileLoaded() timed out waiting for visible tiles');
+          settle(false);
+          return;
+        }
+        const timer = setTimeout(() => {
+          this._tileLoadedTimers.delete(timer);
+          poll();
         }, 100);
-      }
+        this._tileLoadedTimers.add(timer);
+      };
+
+      poll();
     });
   }
 
@@ -618,12 +948,15 @@ export class MVTSource implements google.maps.MapType {
       });
     }
 
-    this._tilesDrawn[tileContext.id] = tileContext;
+    if (tileContext.vectorTile) {
+      this._tilesDrawn[tileContext.id] = tileContext.vectorTile;
+    }
   }
 
   /**
    * Delete drawn tile
    */
+  /** @internal Evict a decoded tile from the cache. Not part of the public API. */
   deleteTileDrawn(id: string): void {
     delete this._tilesDrawn[id];
   }
@@ -671,6 +1004,8 @@ export class MVTSource implements google.maps.MapType {
       this._drawDebugInfo(tileContext);
     }
     this._setTileDrawn(tileContext);
+    this._revealTile(tileContext);
+    this._events.emit('tileload', { tileId: tileContext.id, tileContext });
   }
 
   /**
@@ -700,7 +1035,7 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Create MVT layer
    */
-  private _createMVTLayer(key: string): MVTLayer {
+  private _createMVTLayer(key: string): MVTLayer<TProps> {
     const options = {
       getIDForLayerFeature: this._getIDForLayerFeature,
       filter: this._filter,
@@ -708,7 +1043,7 @@ export class MVTSource implements google.maps.MapType {
       name: key,
       customDraw: this._customDraw,
     };
-    return new MVTLayer(options);
+    return new MVTLayer<TProps>(options);
   }
 
   /**
@@ -719,10 +1054,11 @@ export class MVTSource implements google.maps.MapType {
 
     const tile = this.getTileObject(tileContext.id);
     const { width, height } = { width: this._tileSize, height: this._tileSize };
-    const context2d = tileContext.canvas.getContext('2d')!;
+    const context2d = getTileContext2D(tileContext);
+    if (!context2d) return;
 
-    context2d.strokeStyle = MVTSource.DEFAULT_COLORS.DEBUG_STROKE;
-    context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_FILL;
+    context2d.strokeStyle = DEFAULT_COLORS.DEBUG_STROKE;
+    context2d.fillStyle = DEFAULT_COLORS.DEBUG_FILL;
     context2d.lineWidth = 1;
     context2d.strokeRect(0, 0, width, height);
     context2d.font = '12px Arial';
@@ -741,11 +1077,11 @@ export class MVTSource implements google.maps.MapType {
     const textY = height / 2 - 5;
 
     // Add white background for better readability
-    context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_TEXT_BG;
+    context2d.fillStyle = DEFAULT_COLORS.DEBUG_TEXT_BG;
     context2d.fillRect(textX - 2, textY - 12, textMetrics.width + 4, 16);
 
     // Draw text in black
-    context2d.fillStyle = MVTSource.DEFAULT_COLORS.DEBUG_TEXT;
+    context2d.fillStyle = DEFAULT_COLORS.DEBUG_TEXT;
     context2d.fillText(coordText, textX, textY);
   }
 
@@ -767,24 +1103,71 @@ export class MVTSource implements google.maps.MapType {
       this._eventListeners.push(clickListener);
     }
 
-    if (this._onMouseHoverCallback) {
+    // mousemove used to be wired only when an onMouseHover callback was passed,
+    // which left FeatureStyle.hover - a documented, exported option - dead for
+    // everyone who did not also pass a callback. Hover is now wired whenever
+    // anything can observe it: a callback, or cursor feedback.
+    if (this._onMouseHoverCallback || this._hoverCursor !== false) {
       const mouseMoveListener = this.map.addListener('mousemove', (event: google.maps.MapMouseEvent) => {
-        if (event.latLng && this._onMouseHoverCallback) {
-          const mvtEvent = this._convertToMVTEvent(event);
-          if (mvtEvent) {
-            const mouseOptions = this._getMouseOptions(true);
-            this._mouseEvent(mvtEvent, this._onMouseHoverCallback, mouseOptions);
-          }
+        if (!event.latLng) return;
+        const mvtEvent = this._convertToMVTEvent(event);
+        if (mvtEvent) {
+          this._hoverThrottle.submit(mvtEvent);
         }
       });
       this._eventListeners.push(mouseMoveListener);
+
+      // Without this, moving the pointer off the map (or onto a control) left
+      // the last feature stuck in hover style indefinitely - hover was only
+      // ever cleared by a mousemove that landed on empty space.
+      const mouseOutListener = this.map.addListener('mouseout', () => {
+        this.event = null;
+        this._hoverThrottle.cancel();
+        if (this._hoverTimer) {
+          clearTimeout(this._hoverTimer);
+          this._hoverTimer = null;
+        }
+        this._setHoverCursor(false);
+        this.clearAllHoveredFeatures();
+      });
+      this._eventListeners.push(mouseOutListener);
     }
+  }
+
+  /**
+   * Resolve a hover event and apply its result.
+   *
+   * Runs behind the frame throttle, so at most once per displayed frame.
+   */
+  private _runHoverHitTest(event: MVTMouseEvent<TProps>): void {
+    if (this._disposed) return;
+
+    this.event = event;
+    this._mouseEventContinue(event, this._onMouseHoverCallback, this._getMouseOptions(true));
+    this._setHoverCursor(Boolean(event.feature));
+  }
+
+  /**
+   * Show or clear the clickable cursor over the map.
+   *
+   * The library previously gave no pointer feedback at all, so a map full of
+   * clickable features looked inert. Only touched when it actually changes:
+   * setOptions on every frame would fight the map's own drag cursor.
+   */
+  private _setHoverCursor(overFeature: boolean): void {
+    if (this._hoverCursor === false) return;
+    if (overFeature === this._cursorOverridden) return;
+
+    this._cursorOverridden = overFeature;
+    // null restores the map's own cursor rather than pinning it to 'default',
+    // which would break the grab cursor shown while dragging.
+    this.map.setOptions({ draggableCursor: overFeature ? this._hoverCursor : null });
   }
 
   /**
    * Convert Google Maps mouse event to MVT mouse event
    */
-  private _convertToMVTEvent(event: google.maps.MapMouseEvent): MVTMouseEvent | null {
+  private _convertToMVTEvent(event: google.maps.MapMouseEvent): MVTMouseEvent<TProps> | null {
     const projection = this.map.getProjection();
     const bounds = this.map.getBounds();
 
@@ -817,6 +1200,7 @@ export class MVTSource implements google.maps.MapType {
       setSelected: this._setSelectedOnClick,
       limitToFirstVisibleLayer: this._limitToFirstVisibleLayer,
       delay: mouseHover ? this._hoverDelay : 0,
+      hover: mouseHover,
     };
   }
 
@@ -824,8 +1208,8 @@ export class MVTSource implements google.maps.MapType {
    * Process mouse events
    */
   private _mouseEvent(
-    event: MVTMouseEvent,
-    callbackFunction?: (event: MVTMouseEvent) => void,
+    event: MVTMouseEvent<TProps>,
+    callbackFunction?: (event: MVTMouseEvent<TProps>) => void,
     options?: MouseEventOptions,
   ): void {
     if (!event.pixel || !event.latLng) return;
@@ -835,7 +1219,10 @@ export class MVTSource implements google.maps.MapType {
     }
 
     this.event = event;
-    setTimeout(() => {
+    if (this._hoverTimer) clearTimeout(this._hoverTimer);
+    this._hoverTimer = setTimeout(() => {
+      this._hoverTimer = null;
+      if (this._disposed) return;
       if (event === this.event) {
         this._mouseEventContinue(event, callbackFunction, options);
       }
@@ -846,17 +1233,24 @@ export class MVTSource implements google.maps.MapType {
    * Continue mouse event processing
    */
   private _mouseEventContinue(
-    event: MVTMouseEvent,
-    callbackFunction?: (event: MVTMouseEvent) => void,
+    event: MVTMouseEvent<TProps>,
+    callbackFunction?: (event: MVTMouseEvent<TProps>) => void,
     options?: MouseEventOptions,
   ): void {
     const callback = callbackFunction || (() => {});
-    const zoom = this.map.getZoom() || 0;
+    // Tile lookup needs the integer tile zoom; map.getZoom() is fractional
+    // during smooth zoom on vector basemaps.
+    const zoom = Math.floor(this.map.getZoom() ?? 0);
     const tile = Mercator.getTileAtLatLng(event.latLng, zoom);
     const id = this.getTileId(tile.z, tile.x, tile.y);
     const tileContext = this._visibleTiles[id];
 
     if (!tileContext) {
+      // Leaving the loaded tiles has to drop hover too, or the last feature
+      // stays highlighted while the pointer sits over empty space.
+      if (options?.hover) {
+        this.clearAllHoveredFeatures();
+      }
       // Call the callback if provided
       if (callbackFunction) {
         callbackFunction(event);
@@ -867,28 +1261,37 @@ export class MVTSource implements google.maps.MapType {
     event.tileContext = tileContext;
     event.tilePoint = Mercator.fromLatLngToTilePoint(this.map, event);
 
+    // Resolve the hit across all clickable layers FIRST, then act on it once.
+    // Previously _mouseSelectedFeature ran inside this loop, so a single click
+    // fired the user's callback once per layer, a feature present in two
+    // layers was selected by one and immediately deselected by the next, and
+    // a layer that found nothing called clearAllHoveredFeatures(), wiping the
+    // hover a previous layer had just set.
     const clickableLayers = this._clickableLayers || Object.keys(this.mVTLayers);
+    let hit: MVTFeature<TProps> | undefined;
+
     for (let i = clickableLayers.length - 1; i >= 0; i--) {
       const key = clickableLayers[i];
       const layer = this.mVTLayers[key];
+      if (!layer) continue;
 
-      if (layer) {
-        const processedEvent = layer.handleClickEvent(event, this);
-        this._mouseSelectedFeature(processedEvent, callback, options ?? {});
-
-        if (options?.limitToFirstVisibleLayer && processedEvent.feature) {
-          break;
-        }
+      const processedEvent = layer.handleClickEvent(event, this);
+      if (processedEvent.feature) {
+        hit = processedEvent.feature as MVTFeature<TProps>;
+        if (options?.limitToFirstVisibleLayer) break;
       }
     }
+
+    event.feature = hit;
+    this._mouseSelectedFeature(event, callback, options ?? {});
   }
 
   /**
    * Handle mouse events on features
    */
   private _mouseSelectedFeature(
-    event: MVTMouseEvent,
-    callbackFunction?: (event: MVTMouseEvent) => void,
+    event: MVTMouseEvent<TProps>,
+    callbackFunction?: (event: MVTMouseEvent<TProps>) => void,
     options?: MouseEventOptions,
   ): void {
     let selectionChanged = false;
@@ -897,8 +1300,12 @@ export class MVTSource implements google.maps.MapType {
       const featureId = event.feature.featureId;
       const wasSelected = this._selectedFeatureIds.has(featureId);
 
-      // Handle hover vs selection based on callback type
-      if (callbackFunction && callbackFunction === this._onMouseHoverCallback) {
+      // Hover is declared by the caller, not inferred from which callback is
+      // in play. Comparing against _onMouseHoverCallback misreads the event
+      // whenever there is no hover callback - cursor-only hover would then
+      // fall through and *select* every feature the pointer crossed - and
+      // whenever the same function is passed as both onClick and onMouseHover.
+      if (options?.hover) {
         this._setFeatureHover(featureId, true);
         selectionChanged = true;
       } else if (options?.setSelected !== false) {
@@ -920,7 +1327,7 @@ export class MVTSource implements google.maps.MapType {
       (event as any).isSelected = this._selectedFeatureIds.has(featureId);
     } else {
       // Clear hovered features when no feature is detected and this is a hover event
-      if (callbackFunction && callbackFunction === this._onMouseHoverCallback) {
+      if (options?.hover) {
         this.clearAllHoveredFeatures();
       }
     }
@@ -934,32 +1341,46 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Select a feature by ID
    */
-  private _selectFeature(featureId: string | number): void {
+  /** @internal Select a single feature. Called by MVTFeature.select(). Not part of the public API. */
+  _selectFeature(featureId: string | number): void {
+    const before = new Set(this._selectedFeatureIds);
+
     if (!this._multipleSelection) {
-      this.deselectAllFeatures();
+      // The batch form, not deselectAllFeatures(): that now routes through
+      // setSelection and would emit its own selectionchange, so a single
+      // click would report the clear and the select as two separate changes.
+      this._batchDeselectAllFeatures();
     }
 
     this._selectedFeatureIds.add(featureId);
+    this._selectionVersion++;
     const feature = this._featureIndex.get(featureId);
 
     if (feature) {
       feature.setSelected(true);
       this._scheduleRedrawForFeature(featureId);
 
-      if (this._featureSelectionCallback) {
+      if (this._wantsFeatureData()) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
-          this._callFeatureSelectionCallback(featureId, vectorFeature, true);
+          void this._callFeatureSelectionCallback(featureId, vectorFeature, true).catch((error) => {
+            this.logger.error('Feature selection callback failed:', error);
+          });
         }
       }
     }
+
+    this._emitSelectionChange(before);
   }
 
   /**
    * Deselect a feature by ID
    */
-  private _deselectFeature(featureId: string | number): void {
+  /** @internal Deselect a single feature. Called by MVTFeature.deselect(). Not part of the public API. */
+  _deselectFeature(featureId: string | number): void {
+    const before = new Set(this._selectedFeatureIds);
     this._selectedFeatureIds.delete(featureId);
+    this._selectionVersion++;
 
     // Cancel any pending replacement requests for this feature
     const pendingRequest = this._pendingReplacementRequests.get(featureId);
@@ -974,29 +1395,27 @@ export class MVTSource implements google.maps.MapType {
       feature.setSelected(false);
       this._scheduleRedrawForFeature(featureId);
 
-      if (this._featureSelectionCallback) {
+      if (this._wantsFeatureData()) {
         const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
         if (vectorFeature) {
-          this._callFeatureSelectionCallback(featureId, vectorFeature, false);
+          void this._callFeatureSelectionCallback(featureId, vectorFeature, false).catch((error) => {
+            this.logger.error('Feature selection callback failed:', error);
+          });
         }
       }
     }
 
     this._removeGeoJSONOverlay(featureId);
     delete this._replacedFeatures[featureId];
+
+    this._emitSelectionChange(before);
   }
 
   /**
    * Deselect all features
    */
   deselectAllFeatures(): void {
-    const hadSelections = this._selectedFeatureIds.size > 0;
-    
-    this._batchDeselectAllFeatures();
-    
-    if (hadSelections) {
-      this._scheduleRedraw('all');
-    }
+    this.setSelection([]);
   }
 
   /**
@@ -1037,20 +1456,15 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Schedule redraw for tiles containing a feature
+   * Queue redraws for every visible tile a feature appears in.
    */
-  private _scheduleRedrawForFeature(featureId: string | number): void {
+  /** @internal Queue redraws for every visible tile a feature appears in. Not part of the public API. */
+  _scheduleRedrawForFeature(featureId: string | number): void {
     const feature = this._featureIndex.get(featureId);
     if (!feature) return;
 
-    const tileIds = Object.keys(feature.getTiles());
-    tileIds.forEach((tileId) => {
-      if (this._visibleTiles[tileId]) {
-        this._pendingRedraws.add(tileId);
-      }
-    });
-
-    this._debouncedRedraw();
+    const tileIds = Object.keys(feature.getTiles()).filter((tileId) => this._visibleTiles[tileId]);
+    this._redraws.scheduleMany(tileIds);
   }
 
   /**
@@ -1058,39 +1472,17 @@ export class MVTSource implements google.maps.MapType {
    */
   private _scheduleRedraw(scope: 'all' | string): void {
     if (scope === 'all') {
-      Object.keys(this._visibleTiles).forEach((tileId) => {
-        this._pendingRedraws.add(tileId);
-      });
+      this._redraws.scheduleMany(Object.keys(this._visibleTiles));
     } else {
-      this._pendingRedraws.add(scope);
+      this._redraws.schedule(scope);
     }
-
-    this._debouncedRedraw();
   }
 
   /**
-   * Execute debounced redraws
+   * Repaint the given tiles from their decoded geometry.
    */
-  private _debouncedRedraw(): void {
-    if (this._redrawDebounceTimer) {
-      clearTimeout(this._redrawDebounceTimer);
-    }
-
-    this._redrawDebounceTimer = setTimeout(() => {
-      this._executePendingRedraws();
-      this._redrawDebounceTimer = null;
-    }, this.REDRAW_DEBOUNCE_MS);
-  }
-
-  /**
-   * Execute all pending redraws
-   */
-  private _executePendingRedraws(): void {
-    if (this._pendingRedraws.size === 0) return;
-
-    this.logger.log(`Executing ${this._pendingRedraws.size} pending redraws`);
-
-    this._pendingRedraws.forEach((tileId) => {
+  private _repaintTiles(tileIds: string[]): void {
+    tileIds.forEach((tileId) => {
       const tileContext = this._visibleTiles[tileId];
       if (tileContext && tileContext.vectorTile) {
         this.deleteTileDrawn(tileId);
@@ -1098,8 +1490,6 @@ export class MVTSource implements google.maps.MapType {
         this._drawVectorTile(tileContext.vectorTile, tileContext);
       }
     });
-
-    this._pendingRedraws.clear();
   }
 
   /**
@@ -1119,6 +1509,7 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Check if a feature has been replaced
    */
+  /** @internal Whether a GeoJSON overlay stands in for this feature. Not part of the public API. */
   isFeatureReplaced(featureId: string | number): boolean {
     return this._replacedFeatures[featureId] !== undefined;
   }
@@ -1126,10 +1517,10 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Get selected features
    */
-  getSelectedFeatures(): MVTFeature[] {
+  getSelectedFeatures(): MVTFeature<TProps>[] {
     return Array.from(this._selectedFeatureIds)
       .map((id) => this._featureIndex.get(id))
-      .filter((feature) => feature !== undefined) as MVTFeature[];
+      .filter((feature) => feature !== undefined) as MVTFeature<TProps>[];
   }
 
   /**
@@ -1142,7 +1533,8 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Get selected features in a specific tile
    */
-  getSelectedFeaturesInTile(tileContextId: string): MVTFeature[] {
+  /** @internal Selected features that appear in a given tile. Not part of the public API. */
+  getSelectedFeaturesInTile(tileContextId: string): MVTFeature<TProps>[] {
     const selectedFeatures = [];
     for (const featureId of this._selectedFeatureIds) {
       const selectedFeature = this._featureIndex.get(featureId);
@@ -1157,57 +1549,75 @@ export class MVTSource implements google.maps.MapType {
   }
 
   /**
-   * Set selected features by IDs
+   * Set which features are selected.
+   *
+   * Replaces `setSelectedFeatures`, `addToSelection`, `removeFromSelection`
+   * and `deselectAllFeatures` - four methods for one concept, two of which
+   * quietly latched `multipleSelection` to true and changed click behaviour
+   * for the rest of the session.
+   *
+   * ```ts
+   * source.setSelection(['a', 'b']);                    // replace
+   * source.setSelection(['c'], { mode: 'add' });        // add
+   * source.setSelection(['a'], { mode: 'remove' });     // remove
+   * source.setSelection([]);                            // clear
+   * ```
+   *
+   * `multipleSelection` governs *click* behaviour only. This method always
+   * does exactly what it is asked, whatever that option is set to.
    */
-  setSelectedFeatures(featuresIds: (string | number)[]): void {
-    if (featuresIds.length > 1) {
-      this._multipleSelection = true;
-    }
+  setSelection(featureIds: (string | number)[], options: SelectionOptions = {}): void {
+    const mode = options.mode ?? 'replace';
+    const before = new Set(this._selectedFeatureIds);
 
-    this._batchDeselectAllFeatures();
-    this._batchSelectFeatures(featuresIds);
-    this._scheduleRedraw('all');
-  }
+    switch (mode) {
+      case 'replace':
+        this._batchDeselectAllFeatures();
+        if (featureIds.length > 0) this._batchSelectFeatures(featureIds);
+        break;
 
-  /**
-   * Add features to current selection
-   */
-  addToSelection(featureIds: (string | number)[]): void {
-    if (featureIds.length === 0) return;
-    
-    this._multipleSelection = true;
-    const newSelections: (string | number)[] = [];
-    
-    for (const featureId of featureIds) {
-      if (!this._selectedFeatureIds.has(featureId)) {
-        newSelections.push(featureId);
+      case 'add': {
+        const additions = featureIds.filter((id) => !this._selectedFeatureIds.has(id));
+        if (additions.length > 0) this._batchSelectFeatures(additions);
+        break;
+      }
+
+      case 'remove': {
+        const removals = featureIds.filter((id) => this._selectedFeatureIds.has(id));
+        if (removals.length > 0) this._batchDeselectFeatures(removals);
+        break;
       }
     }
-    
-    if (newSelections.length > 0) {
-      this._batchSelectFeatures(newSelections);
+
+    if (this._emitSelectionChange(before)) {
       this._scheduleRedraw('all');
     }
   }
 
   /**
-   * Remove features from current selection
+   * Emit `selectionchange` if the selection actually differs from `before`.
+   *
+   * @returns Whether anything changed, so callers can skip a redraw.
    */
-  removeFromSelection(featureIds: (string | number)[]): void {
-    if (featureIds.length === 0) return;
-    
-    const toRemove: (string | number)[] = [];
-    
-    for (const featureId of featureIds) {
-      if (this._selectedFeatureIds.has(featureId)) {
-        toRemove.push(featureId);
-      }
+  private _emitSelectionChange(before: Set<string | number>): boolean {
+    const added: (string | number)[] = [];
+    const removed: (string | number)[] = [];
+
+    for (const id of this._selectedFeatureIds) {
+      if (!before.has(id)) added.push(id);
     }
-    
-    if (toRemove.length > 0) {
-      this._batchDeselectFeatures(toRemove);
-      this._scheduleRedraw('all');
+    for (const id of before) {
+      if (!this._selectedFeatureIds.has(id)) removed.push(id);
     }
+
+    if (added.length === 0 && removed.length === 0) return false;
+
+    this._events.emit('selectionchange', {
+      selected: Array.from(this._selectedFeatureIds),
+      added,
+      removed,
+    });
+    return true;
   }
 
   private _batchDeselectFeatures(featureIds: (string | number)[]): void {
@@ -1215,6 +1625,7 @@ export class MVTSource implements google.maps.MapType {
 
     for (const featureId of featureIds) {
       this._selectedFeatureIds.delete(featureId);
+      this._selectionVersion++;
 
       const pendingRequest = this._pendingReplacementRequests.get(featureId);
       if (pendingRequest) {
@@ -1226,12 +1637,10 @@ export class MVTSource implements google.maps.MapType {
       if (feature) {
         feature.setSelected(false);
 
-        if (this._featureSelectionCallback) {
+        if (this._wantsFeatureData()) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
-            callbackPromises.push(
-              this._callFeatureSelectionCallback(featureId, vectorFeature, false)
-            );
+            callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, false));
           }
         }
       }
@@ -1241,7 +1650,7 @@ export class MVTSource implements google.maps.MapType {
     }
 
     if (callbackPromises.length > 0) {
-      Promise.all(callbackPromises).catch(error => {
+      Promise.all(callbackPromises).catch((error) => {
         this.logger.warn('Error in batch deselection callbacks:', error);
       });
     }
@@ -1251,29 +1660,24 @@ export class MVTSource implements google.maps.MapType {
     const callbackPromises: Promise<void>[] = [];
 
     for (const featureId of featureIds) {
-      if (!this._multipleSelection && this._selectedFeatureIds.size > 0) {
-        break;
-      }
-
       this._selectedFeatureIds.add(featureId);
+      this._selectionVersion++;
       const feature = this._featureIndex.get(featureId);
 
       if (feature) {
         feature.setSelected(true);
 
-        if (this._featureSelectionCallback) {
+        if (this._wantsFeatureData()) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
-            callbackPromises.push(
-              this._callFeatureSelectionCallback(featureId, vectorFeature, true)
-            );
+            callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, true));
           }
         }
       }
     }
 
     if (callbackPromises.length > 0) {
-      Promise.all(callbackPromises).catch(error => {
+      Promise.all(callbackPromises).catch((error) => {
         this.logger.warn('Error in batch selection callbacks:', error);
       });
     }
@@ -1281,8 +1685,9 @@ export class MVTSource implements google.maps.MapType {
 
   private _batchDeselectAllFeatures(): void {
     const selectedIds = Array.from(this._selectedFeatureIds);
-    
+
     this._selectedFeatureIds.clear();
+    this._selectionVersion++;
 
     this._pendingReplacementRequests.forEach((controller) => {
       controller.abort();
@@ -1296,22 +1701,20 @@ export class MVTSource implements google.maps.MapType {
       if (feature) {
         feature.setSelected(false);
 
-        if (this._featureSelectionCallback) {
+        if (this._wantsFeatureData()) {
           const vectorFeature = this._getVectorFeatureFromMVTFeature(feature);
           if (vectorFeature) {
-            callbackPromises.push(
-              this._callFeatureSelectionCallback(featureId, vectorFeature, false)
-            );
+            callbackPromises.push(this._callFeatureSelectionCallback(featureId, vectorFeature, false));
           }
         }
       }
-      
+
       this._removeGeoJSONOverlay(featureId);
       delete this._replacedFeatures[featureId];
     });
 
     if (callbackPromises.length > 0) {
-      Promise.all(callbackPromises).catch(error => {
+      Promise.all(callbackPromises).catch((error) => {
         this.logger.warn('Error in batch deselection callbacks:', error);
       });
     }
@@ -1338,7 +1741,7 @@ export class MVTSource implements google.maps.MapType {
     const currentSelectedIds = Array.from(this._selectedFeatureIds);
 
     this.style = style;
-    this._invalidateStyleCache();
+    this._styleResolver.setStyle(this.style);
 
     Object.values(this.mVTLayers).forEach((layer) => {
       layer.setStyle(style);
@@ -1351,118 +1754,29 @@ export class MVTSource implements google.maps.MapType {
     });
 
     if (redrawTiles) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this._deferredTimers.delete(timer);
+        if (this._disposed) return;
         this._scheduleRedraw('all');
       }, 0);
-    }
-  }
-
-  private _getStyleCacheKey(feature: VectorTileFeature, featureId: string | number): string {
-    const isSelected = this._selectedFeatureIds.has(featureId);
-    const isHovered = this._hoveredFeatureIds.has(featureId);
-    const state = (isSelected ? 'S' : '') + (isHovered ? 'H' : '');
-    const featureHash = this._createFeatureHash(feature);
-    return `${this._styleCacheVersion}:${featureId}:${featureHash}:${state}`;
-  }
-
-  private _createFeatureHash(feature: VectorTileFeature): string {
-    const props = feature.properties || {};
-    const keyProps = [
-      'type', 'category', 'class', 'subtype', 'importance', 'level',
-      'land_use', 'population_density', 'area', 'length'
-    ];
-    
-    let hash = `t${feature.type}`;
-    for (const prop of keyProps) {
-      if (props[prop] !== undefined) {
-        hash += `_${prop}:${props[prop]}`;
-      }
-    }
-    return hash;
-  }
-
-  private _invalidateStyleCache(): void {
-    this._styleCacheVersion++;
-    this._styleCache.clear();
-  }
-
-  private _cleanupStyleCache(): void {
-    if (this._styleCache.size >= MVTSource.MAX_STYLE_CACHE_SIZE) {
-      const entries = Array.from(this._styleCache.entries());
-      const keepCount = Math.floor(MVTSource.MAX_STYLE_CACHE_SIZE * 0.7);
-      
-      this._styleCache.clear();
-      entries.slice(-keepCount).forEach(([key, value]) => {
-        this._styleCache.set(key, value);
-      });
+      this._deferredTimers.add(timer);
     }
   }
 
   /**
    * Get current style for feature with selection/hover state
    */
-  getStyleForFeature(feature: VectorTileFeature, featureId: string | number): FeatureStyle {
-    const isSelected = this._selectedFeatureIds.has(featureId);
-    const isHovered = this._hoveredFeatureIds.has(featureId);
-    const baseStyle = typeof this.style === 'function' ? this.style(feature) : this.style;
-    
-    // Fast path: static style with no state changes
-    if (typeof this.style !== 'function' && !isSelected && !isHovered) {
-      return baseStyle;
-    }
-
-    // Fast path: only use cache if we have significant load (>100 features or function styles)
-    const shouldUseCache = typeof this.style === 'function' || this._featureIndex.size > 100;
-    
-    if (shouldUseCache) {
-      const cacheKey = this._getStyleCacheKey(feature, featureId);
-      const cachedStyle = this._styleCache.get(cacheKey);
-      if (cachedStyle) {
-        return cachedStyle;
-      }
-    }
-
-    let resultStyle = { ...baseStyle };
-    delete resultStyle.selected;
-    delete resultStyle.hover;
-
-    if (isSelected && baseStyle.selected) {
-      resultStyle = { ...resultStyle, ...baseStyle.selected };
-    } else if (isHovered && baseStyle.hover) {
-      resultStyle = { ...resultStyle, ...baseStyle.hover };
-    } else if (isSelected && !baseStyle.selected) {
-      const computedSelectedStyle = this.getSelectedStyle(feature);
-      resultStyle = {
-        ...resultStyle,
-        ...(!resultStyle.fillStyle || resultStyle.fillStyle === 'transparent'
-          ? { fillStyle: computedSelectedStyle.fillStyle }
-          : {}),
-        ...(!resultStyle.strokeStyle ? { strokeStyle: computedSelectedStyle.strokeStyle } : {}),
-        ...(!resultStyle.lineWidth ? { lineWidth: computedSelectedStyle.lineWidth } : {}),
-      };
-    } else if (isHovered && !baseStyle.hover) {
-      if (resultStyle.fillStyle && !resultStyle.fillStyle.includes('rgba(')) {
-        const hoverFill = resultStyle.fillStyle.replace('0.3', '0.5').replace('0.4', '0.6');
-        if (hoverFill !== resultStyle.fillStyle) {
-          resultStyle.fillStyle = hoverFill;
-        }
-      }
-    }
-
-    if (shouldUseCache) {
-      this._cleanupStyleCache();
-      this._styleCache.set(this._getStyleCacheKey(feature, featureId), resultStyle);
-    }
-
-    return resultStyle;
+  /** @internal Resolve the style for a feature. Called by MVTFeature during draw. Not part of the public API. */
+  getStyleForFeature(feature: VectorTileFeature, featureId: string | number, context?: StyleContext): FeatureStyle {
+    return this._styleResolver.resolve(feature, featureId, context);
   }
 
   /**
    * Clear tile canvas
    */
+  /** @internal Erase a tile canvas. Not part of the public API. */
   clearTile(canvas: HTMLCanvasElement): void {
-    const context = canvas.getContext('2d')!;
-    context.clearRect(0, 0, canvas.width, canvas.height);
+    clearTileCanvas(canvas);
   }
 
   /**
@@ -1470,7 +1784,18 @@ export class MVTSource implements google.maps.MapType {
    */
   setUrl(url: string, redrawTiles = true): void {
     this._url = url;
+
+    // Abort requests aimed at the old URL before they can land as new tiles.
+    this._tileLoader.setUrl(url);
+    this._tileLoader.abortAll();
+
     this._resetMVTLayers();
+
+    // Drop cached tiles too. Without this, `cache: true` kept serving tiles
+    // fetched from the previous URL.
+    this._tilesDrawn = {};
+    this._loadedTileIds.clear();
+    this.loadedTilesLen = 0;
 
     if (redrawTiles) {
       this._scheduleRedraw('all');
@@ -1498,22 +1823,21 @@ export class MVTSource implements google.maps.MapType {
    * Set tile availability manifest
    */
   async setTileAvailabilityManifest(manifest?: TileAvailabilitySource): Promise<void> {
-    this._tileAvailabilityManifest = manifest;
-    await this._initializeManifest();
+    await this._tileLoader.setManifest(manifest);
   }
 
   /**
    * Get current resolved manifest
    */
   getTileAvailabilityManifest(): TileManifest | undefined {
-    return this._resolvedManifest;
+    return this._tileLoader.getManifest();
   }
 
   /**
    * Refresh manifest (useful for function-based manifests)
    */
   async refreshManifest(): Promise<void> {
-    await this._initializeManifest();
+    await this._tileLoader.initializeManifest();
   }
 
   /**
@@ -1523,23 +1847,199 @@ export class MVTSource implements google.maps.MapType {
     this._clickableLayers = clickableLayers;
   }
 
+  /** Layers that respond to clicks, or `false` when every layer does. */
+  getClickableLayers(): string[] | false {
+    return this._clickableLayers;
+  }
+
+  /** Tile URL template currently in use. */
+  getUrl(): string {
+    return this._url;
+  }
+
+  /** Active feature filter, or `false` when nothing is filtered out. */
+  getFilter(): FilterFunction | false {
+    return this._filter;
+  }
+
+  /** Style currently applied to features. */
+  getStyle(): FeatureStyle | FeatureStyleFunction {
+    return this.style;
+  }
+
+  /**
+   * Snapshot of what this source is currently doing.
+   *
+   * Replaces `MVTUtils.performance.getMetrics`, which took an `any`, reached
+   * into private fields, and read `mvtSource.options?.debug` - a property that
+   * has never existed, so `debugEnabled` was always false.
+   */
+  getStats(): MVTSourceStats {
+    return {
+      visibleTiles: Object.keys(this._visibleTiles).length,
+      cachedTiles: Object.keys(this._tilesDrawn).length,
+      loadedTiles: this._loadedTileIds.size,
+      pendingRequests: this._tileLoader.pendingCount,
+      layers: Object.keys(this.mVTLayers).length,
+      features: this._featureIndex.size,
+      selectedFeatures: this._selectedFeatureIds.size,
+      hoveredFeatures: this._hoveredFeatureIds.size,
+      pixelRatio: this._pixelRatio,
+      debug: this._debug,
+      disposed: this._disposed,
+    };
+  }
+
+  /**
+   * Re-fetch a tile from the network, bypassing the cache.
+   *
+   * `redrawTile` only repaints from geometry already decoded; this is the
+   * counterpart for when the tile itself has changed on the server.
+   */
+  refreshTile(tileId: string): void {
+    const tileContext = this._visibleTiles[tileId];
+    if (!tileContext) return;
+
+    this.deleteTileDrawn(tileId);
+    this._loadedTileIds.delete(tileId);
+    this.loadedTilesLen = this._loadedTileIds.size;
+    this.clearTile(tileContext.canvas);
+    this._tileLoader.fetch(tileContext, this.getTileObject(tileContext.parentId || tileContext.id));
+  }
+
+  /**
+   * Geographic bounds of a feature, across every tile it currently spans.
+   *
+   * Returns `undefined` when the feature is not loaded - it may be outside the
+   * viewport, or its tiles may have been released.
+   */
+  getFeatureBounds(featureId: string | number): google.maps.LatLngBounds | undefined {
+    const feature = this._featureIndex.get(featureId);
+    if (!feature) return undefined;
+
+    let bounds: google.maps.LatLngBounds | undefined;
+
+    for (const [tileId, tile] of Object.entries(feature.getTiles())) {
+      const tileContext = this._visibleTiles[tileId];
+      if (!tileContext) continue;
+
+      const coord = this.getTileObject(tileContext.parentId || tileContext.id);
+      const rings = tile.vectorTileFeature.loadGeometry();
+      const worldTiles = Math.pow(2, coord.z);
+
+      for (const ring of rings) {
+        for (const point of ring) {
+          const tileX = point.x / tile.vectorTileFeature.extent;
+          const tileY = point.y / tile.vectorTileFeature.extent;
+          const lng = ((coord.x + tileX) / worldTiles) * 360 - 180;
+          const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (coord.y + tileY)) / worldTiles))) * 180) / Math.PI;
+
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+          const latLng = new google.maps.LatLng(lat, lng);
+          if (bounds) {
+            bounds.extend(latLng);
+          } else {
+            bounds = new google.maps.LatLngBounds(latLng, latLng);
+          }
+        }
+      }
+    }
+
+    return bounds;
+  }
+
+  /**
+   * Pan and zoom the map to a feature.
+   *
+   * Zooming to what you just selected is the usual next step, and doing it by
+   * hand meant reaching into tile geometry.
+   *
+   * @returns Whether the feature was found and the map moved.
+   */
+  fitBounds(featureId: string | number, padding?: number | google.maps.Padding): boolean {
+    const bounds = this.getFeatureBounds(featureId);
+    if (!bounds) return false;
+
+    this.map.fitBounds(bounds, padding);
+    return true;
+  }
+
+  /**
+   * Opacity applied to every tile canvas, from 0 to 1.
+   *
+   * Applies to tiles already on screen as well as ones drawn later.
+   */
+  setOpacity(opacity: number): void {
+    this._opacity = Math.min(1, Math.max(0, opacity));
+
+    for (const tileContext of Object.values(this._visibleTiles)) {
+      // Only touch tiles that have something to show; a tile still waiting on
+      // its response is held at 0 by the fade-in and must stay there.
+      if (!this._pendingReveal.has(tileContext.canvas)) {
+        tileContext.canvas.style.opacity = String(this._opacity);
+      }
+    }
+  }
+
+  /** Current tile opacity. */
+  getOpacity(): number {
+    return this._opacity;
+  }
+
+  /** Whether the source is currently rendered. */
+  isVisible(): boolean {
+    return this._visible;
+  }
+
+  /** Show the source, if it was hidden. */
+  show(): void {
+    this._setVisible(true);
+  }
+
+  /**
+   * Hide the source without tearing it down.
+   *
+   * Tiles stay loaded and selection is preserved, so showing it again is
+   * immediate. Use `dispose()` to actually release the source.
+   */
+  hide(): void {
+    this._setVisible(false);
+  }
+
+  private _setVisible(visible: boolean): void {
+    if (this._visible === visible) return;
+    this._visible = visible;
+
+    for (const tileContext of Object.values(this._visibleTiles)) {
+      tileContext.canvas.style.display = visible ? '' : 'none';
+    }
+  }
+
   // ===== GeoJSON Overlay Management =====
 
   /**
    * Set up click and hover handlers for GeoJSON overlays
    */
+  /**
+   * Resolve a Data.Feature overlay back to its MVT feature id.
+   *
+   * Uses a reverse map rather than Object.entries(this._geoJSONOverlays),
+   * whose keys are always strings. For the common case of a numeric feature id
+   * that produced `"123"` instead of `123`, so the id never matched
+   * `_selectedFeatureIds` or `_featureIndex`: clicking an overlay to deselect
+   * it added an unreachable ghost entry to the selection set instead.
+   */
+  private _findOverlayFeatureId(overlay: google.maps.Data.Feature | undefined): string | number | null {
+    if (!overlay) return null;
+    return this._overlayToFeatureId.get(overlay) ?? null;
+  }
+
   private _setupGeoJSONClickHandlers(): void {
     // Click handler
     const dataClickListener = this.map.data.addListener('click', (event: google.maps.Data.MouseEvent) => {
       if (event.feature) {
-        let featureId: string | number | null = null;
-
-        for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
-          if (overlay === event.feature) {
-            featureId = id;
-            break;
-          }
-        }
+        const featureId = this._findOverlayFeatureId(event.feature);
 
         if (featureId !== null) {
           this.logger.log(`GeoJSON overlay clicked for feature ID: ${featureId}`);
@@ -1556,23 +2056,18 @@ export class MVTSource implements google.maps.MapType {
 
     const dataMouseOverListener = this.map.data.addListener('mouseover', (event: google.maps.Data.MouseEvent) => {
       if (event.feature && this._onMouseHoverCallback) {
-        let featureId: string | number | null = null;
-
-        for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
-          if (overlay === event.feature) {
-            featureId = id;
-            break;
-          }
-        }
+        const featureId = this._findOverlayFeatureId(event.feature);
 
         if (featureId !== null) {
-          const mvtEvent: MVTMouseEvent = {
+          // Hand over the real feature rather than a stub literal. These
+          // handlers used to fabricate `{ featureId, properties }`, which does
+          // not satisfy MVTFeature - so every documented property of
+          // `event.feature` beyond those two was absent at runtime while the
+          // type claimed otherwise.
+          const mvtEvent: MVTMouseEvent<TProps> = {
             latLng: event.latLng || new google.maps.LatLng(0, 0),
             pixel: new google.maps.Point(0, 0),
-            feature: {
-              featureId: featureId,
-              properties: this._replacedFeatures[featureId]?.properties || {},
-            },
+            feature: this._featureIndex.get(featureId),
           };
 
           this._onMouseHoverCallback(mvtEvent);
@@ -1583,23 +2078,18 @@ export class MVTSource implements google.maps.MapType {
 
     const dataMouseMoveListener = this.map.data.addListener('mousemove', (event: google.maps.Data.MouseEvent) => {
       if (event.feature && this._onMouseHoverCallback) {
-        let featureId: string | number | null = null;
-
-        for (const [id, overlay] of Object.entries(this._geoJSONOverlays)) {
-          if (overlay === event.feature) {
-            featureId = id;
-            break;
-          }
-        }
+        const featureId = this._findOverlayFeatureId(event.feature);
 
         if (featureId !== null) {
-          const mvtEvent: MVTMouseEvent = {
+          // Hand over the real feature rather than a stub literal. These
+          // handlers used to fabricate `{ featureId, properties }`, which does
+          // not satisfy MVTFeature - so every documented property of
+          // `event.feature` beyond those two was absent at runtime while the
+          // type claimed otherwise.
+          const mvtEvent: MVTMouseEvent<TProps> = {
             latLng: event.latLng || new google.maps.LatLng(0, 0),
             pixel: new google.maps.Point(0, 0),
-            feature: {
-              featureId: featureId,
-              properties: this._replacedFeatures[featureId]?.properties || {},
-            },
+            feature: this._featureIndex.get(featureId),
           };
 
           this._onMouseHoverCallback(mvtEvent);
@@ -1610,7 +2100,7 @@ export class MVTSource implements google.maps.MapType {
 
     const dataMouseOutListener = this.map.data.addListener('mouseout', (event: google.maps.Data.MouseEvent) => {
       if (this._onMouseHoverCallback) {
-        const mvtEvent: MVTMouseEvent = {
+        const mvtEvent: MVTMouseEvent<TProps> = {
           latLng: event.latLng || new google.maps.LatLng(0, 0),
           pixel: new google.maps.Point(0, 0),
           feature: undefined,
@@ -1625,7 +2115,7 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Add GeoJSON overlay
    */
-  private _addGeoJSONOverlay(featureId: string | number, geoJSONFeature: GeoJSONFeature): void {
+  private _addGeoJSONOverlay(featureId: string | number, geoJSONFeature: GeoJSONFeature<TProps>): void {
     try {
       this._removeGeoJSONOverlay(featureId);
 
@@ -1636,6 +2126,7 @@ export class MVTSource implements google.maps.MapType {
 
       if (dataFeature) {
         this._geoJSONOverlays[featureId] = dataFeature;
+        this._overlayToFeatureId.set(dataFeature, featureId);
         this.map.data.overrideStyle(dataFeature, this._getGeoJSONSelectedStyle());
         this.logger.log(`Added GeoJSON overlay for feature ${featureId}`);
       }
@@ -1653,6 +2144,7 @@ export class MVTSource implements google.maps.MapType {
       try {
         this.map.data.remove(overlay);
         delete this._geoJSONOverlays[featureId];
+        this._overlayToFeatureId.delete(overlay);
         this.logger.log(`Removed GeoJSON overlay for feature ${featureId}`);
       } catch (error) {
         this.logger.error(`Failed to remove GeoJSON overlay for feature ${featureId}:`, error);
@@ -1668,7 +2160,7 @@ export class MVTSource implements google.maps.MapType {
     let selectedStyle = baseStyle.selected || {};
 
     if (!baseStyle.selected) {
-      selectedStyle = this.getSelectedStyle({ type: 3, properties: {} } as any);
+      selectedStyle = StyleResolver.selectedStyleFor({ type: 3, properties: {} } as any);
     }
 
     return {
@@ -1708,7 +2200,31 @@ export class MVTSource implements google.maps.MapType {
   /**
    * Merge all features with the same ID from PBF data into a single GeoJSON feature
    */
-  private _mergeFeaturesByIdFromPBF(featureId: string | number): GeoJSONFeature | null {
+  /**
+   * Whether anything needs a feature's GeoJSON form on selection.
+   *
+   * This used to be a bare `featureSelectionCallback` check, which meant
+   * `getReplacementFeature` - a separate, documented option whose entire job
+   * is to draw a high-detail overlay - did nothing at all unless a callback
+   * happened to be supplied alongside it.
+   */
+  private _wantsFeatureData(): boolean {
+    return Boolean(this._featureSelectionCallback || this._getReplacementFeature);
+  }
+
+  /** Load the merge subsystem once, and reuse it thereafter. */
+  private async _getGeometryMerger(): Promise<GeometryMerger> {
+    if (this._geometryMerger) return this._geometryMerger;
+
+    this._geometryMergerLoad ??= import('./geojson/GeometryMerger').then((module) => {
+      this._geometryMerger = new module.GeometryMerger();
+      return this._geometryMerger;
+    });
+
+    return this._geometryMergerLoad;
+  }
+
+  private async _mergeFeaturesByIdFromPBF(featureId: string | number): Promise<GeoJSONFeature<TProps> | null> {
     const feature = this._featureIndex.get(featureId);
     if (!feature) return null;
 
@@ -1718,35 +2234,48 @@ export class MVTSource implements google.maps.MapType {
 
     this.logger.log(`Merging feature ${featureId} from ${Object.keys(tiles).length} tiles`);
 
+    const merger = await this._getGeometryMerger();
+
     // Collect all coordinate rings from all tiles containing this feature
-    for (const [tileId, tileData] of Object.entries(tiles)) {
-      const vectorFeature = tileData.vectorTileFeature;
-      const coordinates = vectorFeature.loadGeometry();
+    // Walk every part per tile: a tiler can split one feature into several
+    // same-id tile features, and a merge built from only the first part would
+    // drop the rest of the geometry.
+    for (const tileId of Object.keys(tiles)) {
+      for (const tileData of feature.getTileParts(tileId)) {
+        const vectorFeature = tileData.vectorTileFeature;
+        const coordinates = vectorFeature.loadGeometry();
 
-      if (coordinates && coordinates.length > 0) {
-        // Set properties from the first feature encountered
-        if (Object.keys(properties).length === 0) {
-          properties = { ...vectorFeature.properties };
-        }
+        if (coordinates && coordinates.length > 0) {
+          // Set properties from the first feature encountered
+          if (Object.keys(properties).length === 0) {
+            properties = { ...vectorFeature.properties };
+          }
 
-        // Convert PBF coordinates to geographic coordinates
-        const tileContext = this._visibleTiles[tileId];
-        if (tileContext) {
-          const convertedCoords = this._convertPBFCoordinatesToGeoJSON(
-            coordinates,
-            tileContext,
-            tileData.divisor,
-            vectorFeature.type,
-          );
+          // Convert PBF coordinates to geographic coordinates
+          const tileContext = this._visibleTiles[tileId];
+          if (tileContext) {
+            // Overzoomed tiles carry the *parent* tile's geometry, so the
+            // coordinates have to be projected from the parent's z/x/y.
+            // Deriving them from the child put every overlay for an
+            // overzoomed feature at the wrong place on the map.
+            const sourceTileId = tileContext.parentId || tileContext.id;
+            const convertedCoords = merger.convertPBFCoordinatesToGeoJSON(
+              coordinates,
+              this.getTileObject(sourceTileId),
+              tileContext.tileSize,
+              tileData.divisor,
+              vectorFeature.type,
+            );
 
-          if (convertedCoords && vectorFeature.type === 3) {
-            // Only handle Polygons for now
-            // convertedCoords is an array of rings from this tile
-            if (Array.isArray(convertedCoords) && convertedCoords.length > 0) {
-              // Add all rings from this tile to our collection
-              for (const ring of convertedCoords as number[][][]) {
-                if (ring && ring.length > 0) {
-                  allCoordinateRings.push(ring);
+            if (convertedCoords && vectorFeature.type === 3) {
+              // Only handle Polygons for now
+              // convertedCoords is an array of rings from this tile
+              if (Array.isArray(convertedCoords) && convertedCoords.length > 0) {
+                // Add all rings from this tile to our collection
+                for (const ring of convertedCoords as number[][][]) {
+                  if (ring && ring.length > 0) {
+                    allCoordinateRings.push(ring);
+                  }
                 }
               }
             }
@@ -1762,377 +2291,20 @@ export class MVTSource implements google.maps.MapType {
     );
 
     // Merge connecting rings into optimal polygon/multipolygon structure
-    const mergedGeometry = this._mergeConnectingRings(allCoordinateRings);
+    const mergedGeometry = merger.mergeConnectingRings(allCoordinateRings);
 
     return {
       type: 'Feature',
       id: featureId,
-      properties,
+      properties: asFeatureProperties<TProps>(properties),
       geometry: mergedGeometry,
     };
   }
 
   /**
-   * Merge connecting coordinate rings into optimal polygon/multipolygon geometry
-   */
-  private _mergeConnectingRings(rings: number[][][]): {
-    type: 'Polygon' | 'MultiPolygon';
-    coordinates: number[][][] | number[][][][];
-  } {
-    if (rings.length === 0) {
-      return { type: 'Polygon', coordinates: [] };
-    }
-
-    if (rings.length === 1) {
-      return { type: 'Polygon', coordinates: rings };
-    }
-
-    this.logger.log(`Starting polygon merge for ${rings.length} rings`);
-
-    try {
-      // Convert rings to individual polygon features
-      const polygons = rings.map((ring, index) => {
-        // Ensure the ring is closed
-        const closedRing = this._ensureRingClosure(ring);
-        return polygon([closedRing], { originalIndex: index });
-      });
-
-      // Group polygons that touch or overlap
-      const polygonGroups = this._groupTouchingPolygons(polygons);
-
-      this.logger.log(`Grouped ${polygons.length} polygons into ${polygonGroups.length} groups`);
-
-      // Merge each group and collect results
-      const mergedPolygons: Feature<Polygon | MultiPolygon>[] = [];
-
-      for (const group of polygonGroups) {
-        if (group.length === 1) {
-          // Single polygon, no merging needed
-          mergedPolygons.push(group[0]);
-        } else {
-          // Merge touching polygons using union operation
-          const merged = this._unionPolygons(group);
-          if (merged) {
-            mergedPolygons.push(merged);
-          } else {
-            // Fallback: keep original polygons if union failed
-            mergedPolygons.push(...group);
-          }
-        }
-      }
-
-      // Convert back to GeoJSON geometry format
-      const result = this._convertTurfPolygonsToGeometry(mergedPolygons);
-
-      this.logger.log(`Merged ${rings.length} rings into ${result.type} with ${mergedPolygons.length} polygon groups`);
-      return result;
-    } catch (error) {
-      this.logger.error('Error in polygon merging, falling back to simple approach:', error);
-      // Fallback to original simple approach - return as single polygon
-      rings.sort((a, b) => this._calculateRingArea(b) - this._calculateRingArea(a));
-      return { type: 'Polygon', coordinates: rings };
-    }
-  }
-
-  /**
-   * Calculate the area of a ring (simplified)
-   */
-  private _calculateRingArea(ring: number[][]): number {
-    if (ring.length < 3) return 0;
-
-    let area = 0;
-    for (let i = 0; i < ring.length - 1; i++) {
-      const [x1, y1] = ring[i];
-      const [x2, y2] = ring[i + 1];
-      area += x1 * y2 - x2 * y1;
-    }
-    return Math.abs(area / 2);
-  }
-
-  /**
-   * Ensure a ring is properly closed (first point equals last point)
-   */
-  private _ensureRingClosure(ring: number[][]): number[][] {
-    if (ring.length < 3) return ring;
-
-    const firstPoint = ring[0];
-    const lastPoint = ring[ring.length - 1];
-
-    // Check if the ring is already closed
-    if (firstPoint[0] === lastPoint[0] && firstPoint[1] === lastPoint[1]) {
-      return ring;
-    }
-
-    // Close the ring by adding the first point at the end
-    return [...ring, firstPoint];
-  }
-
-  /**
-   * Group polygons that touch or overlap using Union-Find algorithm
-   */
-  private _groupTouchingPolygons(polygons: Feature<Polygon>[]): Feature<Polygon>[][] {
-    if (polygons.length <= 1) return [polygons];
-
-    // Cache coordinate extraction for performance
-    const polygonCoords = polygons.map((poly) => this._getAllCoordinates(poly));
-
-    // Union-Find data structure for efficient grouping
-    const parent = Array.from({ length: polygons.length }, (_, i) => i);
-
-    const find = (x: number): number => {
-      if (parent[x] !== x) {
-        parent[x] = find(parent[x]); // Path compression
-      }
-      return parent[x];
-    };
-
-    const union = (x: number, y: number): void => {
-      const rootX = find(x);
-      const rootY = find(y);
-      if (rootX !== rootY) {
-        parent[rootX] = rootY;
-      }
-    };
-
-    // Build adjacency using cached coordinates - O(n²) instead of O(n³)
-    for (let i = 0; i < polygons.length; i++) {
-      for (let j = i + 1; j < polygons.length; j++) {
-        if (this._polygonsTouchOrOverlap(polygons[i], polygons[j], polygonCoords[i], polygonCoords[j])) {
-          union(i, j);
-        }
-      }
-    }
-
-    // Group polygons by their root parent
-    const groups = new Map<number, Feature<Polygon>[]>();
-    for (let i = 0; i < polygons.length; i++) {
-      const root = find(i);
-      if (!groups.has(root)) {
-        groups.set(root, []);
-      }
-      groups.get(root)!.push(polygons[i]);
-    }
-
-    return Array.from(groups.values());
-  }
-
-  /**
-   * Check if two polygons touch or overlap (including point-touching)
-   */
-  private _polygonsTouchOrOverlap(
-    poly1: Feature<Polygon>,
-    poly2: Feature<Polygon>,
-    coords1: number[][],
-    coords2: number[][],
-  ): boolean {
-    try {
-      // Method 1: Direct coordinate comparison using pre-extracted coordinates
-      if (this._hasSharedCoordinates(coords1, coords2)) {
-        return true;
-      }
-
-      // Method 2: Geometric intersection for overlapping cases
-      const intersection = intersect(poly1, poly2);
-      return intersection !== null && intersection !== undefined;
-    } catch (error) {
-      this.logger.warn("Error checking polygon overlap, assuming they don't touch:", error);
-      return false;
-    }
-  }
-
-  /**
-   * Check if two polygons share any exact coordinates using pre-extracted coordinates
-   */
-  private _hasSharedCoordinates(coords1: number[][], coords2: number[][]): boolean {
-    try {
-      // Create a Set of coordinate strings for O(1) lookup
-      const coordSet1 = new Set<string>();
-      for (const coord of coords1) {
-        coordSet1.add(`${coord[0]},${coord[1]}`);
-      }
-
-      // Check if any coordinate from coords2 matches coords1
-      for (const coord of coords2) {
-        if (coordSet1.has(`${coord[0]},${coord[1]}`)) {
-          return true;
-        }
-      }
-
-      return false;
-    } catch (error) {
-      this.logger.warn('Error checking shared coordinates:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Extract all coordinates from a polygon
-   */
-  private _getAllCoordinates(polygonFeature: Feature<Polygon>): number[][] {
-    const coordinates: number[][] = [];
-
-    try {
-      if (polygonFeature.geometry && polygonFeature.geometry.coordinates) {
-        const rings = polygonFeature.geometry.coordinates;
-
-        for (const ring of rings) {
-          for (const coord of ring) {
-            coordinates.push([coord[0], coord[1]]);
-          }
-        }
-      }
-    } catch (error) {
-      this.logger.warn('Error extracting coordinates:', error);
-    }
-
-    return coordinates;
-  }
-
-  /**
-   * Union multiple polygons into a single polygon or multipolygon
-   */
-  private _unionPolygons(polygons: Feature<Polygon>[]): Feature<Polygon | MultiPolygon> | null {
-    // Early returns for performance
-    if (polygons.length === 0) return null;
-    if (polygons.length === 1) return polygons[0];
-
-    try {
-      // Reduce approach for cleaner code
-      return polygons.slice(1).reduce<Feature<Polygon | MultiPolygon, Properties>>((result, currentPolygon, index) => {
-        const unionResult = union(result, currentPolygon);
-        if (!unionResult) {
-          this.logger.warn(`Failed to union polygon ${index}, keeping separate`);
-          return result; // Keep previous result instead of failing completely
-        }
-
-        return unionResult;
-      }, polygons[0]);
-    } catch (error) {
-      this.logger.error('Error in polygon union operation:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Convert Turf.js polygon features back to proper GeoJSON geometry
-   */
-  private _convertTurfPolygonsToGeometry(polygons: Feature<Polygon | MultiPolygon>[]): {
-    type: 'Polygon' | 'MultiPolygon';
-    coordinates: number[][][] | number[][][][];
-  } {
-    // Early returns for performance
-    if (polygons.length === 0) {
-      return { type: 'Polygon', coordinates: [] };
-    }
-
-    if (polygons.length === 1) {
-      // Single result - return as-is with proper typing
-      const { geometry } = polygons[0];
-      return {
-        type: geometry.type as 'Polygon' | 'MultiPolygon',
-        coordinates: geometry.coordinates as number[][][] | number[][][][],
-      };
-    }
-
-    // Multiple polygons - efficiently build MultiPolygon
-    const multiPolygonCoords: number[][][][] = [];
-
-    for (const { geometry } of polygons) {
-      if (geometry.type === 'Polygon') {
-        multiPolygonCoords.push(geometry.coordinates);
-      } else {
-        // Flatten MultiPolygon components
-        multiPolygonCoords.push(...geometry.coordinates);
-      }
-    }
-
-    return {
-      type: 'MultiPolygon',
-      coordinates: multiPolygonCoords,
-    };
-  }
-
-  /**
-   * Convert PBF coordinates to GeoJSON geographic coordinates
-   */
-  private _convertPBFCoordinatesToGeoJSON(
-    pbfCoordinates: any[],
-    tileContext: TileContext,
-    divisor: number,
-    geometryType: number,
-  ): number[][] | number[][][] | null {
-    const tileCoord = this.getTileObject(tileContext.id);
-    const z = tileCoord.z;
-    const x = tileCoord.x;
-    const y = tileCoord.y;
-    const tileSize = tileContext.tileSize;
-
-    this.logger.log(
-      `Converting coordinates for tile ${z}/${x}/${y}, divisor: ${divisor}, tileSize: ${tileSize}, geometryType: ${geometryType}`,
-    );
-
-    try {
-      const convertPoint = (point: any): [number, number] => {
-        // Convert from PBF extent coordinates to tile pixel coordinates
-        const pixelX = point.x / divisor;
-        const pixelY = point.y / divisor;
-
-        // Convert to tile-relative coordinates (0-1)
-        const tileX = pixelX / tileSize;
-        const tileY = pixelY / tileSize;
-
-        // Convert to global tile coordinates
-        const globalX = x + tileX;
-        const globalY = y + tileY;
-
-        // Convert to geographic coordinates using Web Mercator projection
-        const tileCount = 1 << z; // Faster than Math.pow(2, z)
-        const lon = (globalX / tileCount) * 360 - 180;
-        const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * globalY) / tileCount))) * 180) / Math.PI;
-
-        return [lon, lat]; // GeoJSON format: [longitude, latitude]
-      };
-
-      if (geometryType === 1) {
-        // Point
-        // For points, pbfCoordinates is array of point groups
-        const result = pbfCoordinates.map((pointGroup) => {
-          if (Array.isArray(pointGroup) && pointGroup.length > 0) {
-            return convertPoint(pointGroup[0]);
-          }
-          return convertPoint(pointGroup);
-        });
-        this.logger.log(`Converted ${result.length} points`);
-        return result;
-      } else if (geometryType === 2) {
-        // LineString
-        // For linestrings, pbfCoordinates is array of line parts
-        const result = pbfCoordinates.map((lineString) => lineString.map(convertPoint));
-        this.logger.log(`Converted ${result.length} linestrings with ${result.map((ls) => ls.length)} points each`);
-        return result;
-      } else if (geometryType === 3) {
-        // Polygon
-        // For polygons, pbfCoordinates is array of rings
-        const result = pbfCoordinates.map((ring) => ring.map(convertPoint));
-        this.logger.log(`Converted polygon with ${result.length} rings, ring sizes: ${result.map((r) => r.length)}`);
-        return result;
-      }
-    } catch (error) {
-      this.logger.error('Error converting PBF coordinates to GeoJSON:', error, {
-        tileId: tileContext.id,
-        geometryType,
-        coordinatesLength: pbfCoordinates.length,
-        firstCoord: pbfCoordinates[0],
-      });
-    }
-
-    return null;
-  }
-
-  /**
    * Get vector tile feature from MVT feature
    */
-  private _getVectorFeatureFromMVTFeature(mvtFeature: MVTFeature): VectorTileFeature | null {
+  private _getVectorFeatureFromMVTFeature(mvtFeature: MVTFeature<TProps>): VectorTileFeature | null {
     const tiles = mvtFeature.getTiles();
     const firstTileId = Object.keys(tiles)[0];
     if (firstTileId && tiles[firstTileId]) {
@@ -2149,7 +2321,7 @@ export class MVTSource implements google.maps.MapType {
     originalFeature: import('@mapbox/vector-tile').VectorTileFeature,
     selected: boolean,
   ): Promise<void> {
-    if (!this._featureSelectionCallback) return;
+    if (!this._wantsFeatureData()) return;
 
     try {
       let featureData = this._replacedFeatures[featureId];
@@ -2178,7 +2350,7 @@ export class MVTSource implements google.maps.MapType {
                 );
 
                 // Check if the request was aborted or feature is no longer selected
-                if (abortController.signal.aborted || !this._selectedFeatureIds.has(featureId)) {
+                if (abortController.signal.aborted || this._disposed || !this._selectedFeatureIds.has(featureId)) {
                   return; // Don't apply the result if feature was deselected
                 }
 
@@ -2188,7 +2360,7 @@ export class MVTSource implements google.maps.MapType {
                   featureData = replacementResult;
                 } else {
                   // Fallback to merging features by ID from PBF
-                  const mergedFeature = this._mergeFeaturesByIdFromPBF(featureId);
+                  const mergedFeature = await this._mergeFeaturesByIdFromPBF(featureId);
                   if (mergedFeature) {
                     featureData = mergedFeature;
                   }
@@ -2206,11 +2378,18 @@ export class MVTSource implements google.maps.MapType {
             }
           }
         } else {
-          const mergedFeature = this._mergeFeaturesByIdFromPBF(featureId);
+          const mergedFeature = await this._mergeFeaturesByIdFromPBF(featureId);
           if (mergedFeature) {
             featureData = mergedFeature;
           }
         }
+      }
+
+      // The awaits above (replacement fetch, lazy geometry-merge import) can
+      // suspend long enough for the world to move on. A deselection or a
+      // dispose must win over a stale "selected" result arriving late.
+      if (this._disposed || (selected && !this._selectedFeatureIds.has(featureId))) {
+        return;
       }
 
       // Fallback to empty feature
@@ -2218,7 +2397,7 @@ export class MVTSource implements google.maps.MapType {
         featureData = {
           type: 'Feature' as const,
           id: featureId,
-          properties: originalFeature.properties || {},
+          properties: asFeatureProperties<TProps>(originalFeature.properties),
           geometry: {
             type: 'Point',
             coordinates: [],
@@ -2226,7 +2405,11 @@ export class MVTSource implements google.maps.MapType {
         };
       }
 
-      this._featureSelectionCallback(featureId, featureData, selected);
+      // Guarded here, not at the top: the replacement overlay must still be
+      // built for callers who supplied getReplacementFeature and no callback.
+      if (this._featureSelectionCallback) {
+        this._featureSelectionCallback(featureId, featureData, selected);
+      }
     } catch (error) {
       this.logger.error('Error in feature selection callback:', error);
     }
@@ -2236,7 +2419,45 @@ export class MVTSource implements google.maps.MapType {
    * Cleanup method for when layer is removed
    */
   dispose(): void {
+    if (this._disposed) return;
     this.logger.log('Disposing MVTSource and cleaning up all resources');
+
+    // Set first: in-flight fetches and queued timers check this before
+    // touching state, so nothing can revive the source mid-teardown.
+    this._disposed = true;
+
+    // Abort every in-flight tile fetch. These were previously left running,
+    // and a late response re-created mVTLayers entries and re-populated
+    // _tilesDrawn, half-reviving a torn-down source.
+    this._tileLoader.abortAll();
+
+    // Cancel every timer. Only _redrawDebounceTimer used to be cleared.
+    this._tileLoadedTimers.forEach(clearTimeout);
+    this._tileLoadedTimers.clear();
+    // Settle before the timers are gone, or every waiting promise hangs.
+    this._tileLoadedResolvers.forEach((settle) => settle(false));
+    this._tileLoadedResolvers.clear();
+    this._deferredTimers.forEach(clearTimeout);
+    this._deferredTimers.clear();
+    if (this._hoverTimer) {
+      clearTimeout(this._hoverTimer);
+      this._hoverTimer = null;
+    }
+    this._hoverThrottle.cancel();
+    this._redraws.dispose();
+    this._events.dispose();
+
+    if (this._releaseDebug) {
+      this._releaseDebug();
+      this._releaseDebug = null;
+    }
+
+    // Hand the cursor back before the listeners go, or a map that outlives
+    // this source keeps showing the pointer over geometry that is gone.
+    this._setHoverCursor(false);
+
+    // Deselect before dropping the overlays it needs to clean up.
+    this.deselectAllFeatures();
 
     // Remove self from map's overlay types
     try {
@@ -2266,8 +2487,7 @@ export class MVTSource implements google.maps.MapType {
       }
     });
     this._geoJSONOverlays = {};
-
-    this.deselectAllFeatures();
+    this._overlayToFeatureId.clear();
 
     // Cancel any remaining pending replacement requests (should already be done by deselectAllFeatures)
     this._pendingReplacementRequests.forEach((controller) => {
@@ -2275,26 +2495,27 @@ export class MVTSource implements google.maps.MapType {
     });
     this._pendingReplacementRequests.clear();
 
-    this._featureIndex.clear();
-    this._selectedFeatureIds.clear();
-    this._hoveredFeatureIds.clear();
-    this._tilesDrawn = {};
-    this._visibleTiles = {};
-    this._replacedFeatures = {};
-
-    this._styleCache.clear();
-    this._pendingRedraws.clear();
-    if (this._redrawDebounceTimer) {
-      clearTimeout(this._redrawDebounceTimer);
-      this._redrawDebounceTimer = null;
-    }
-
+    // Dispose layers before clearing the index so each feature can drop its
+    // decoded tile data; previously the whole graph was dropped by reference
+    // and its cached geometry leaked.
     Object.values(this.mVTLayers).forEach((layer) => {
       if (layer.dispose) {
         layer.dispose();
       }
     });
     this.mVTLayers = {};
+
+    this._featureIndex.clear();
+    this._selectedFeatureIds.clear();
+    this._hoveredFeatureIds.clear();
+    this._tilesDrawn = {};
+    this._visibleTiles = {};
+    this._replacedFeatures = {};
+    this._mountedTiles.clear();
+    this._loadedTileIds.clear();
+    this.loadedTilesLen = 0;
+
+    this._styleResolver.clear();
 
     this.logger.log('MVTSource disposal complete');
   }

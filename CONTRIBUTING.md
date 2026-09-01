@@ -49,30 +49,48 @@ We welcome contributions to google-maps-vector-engine! This guide will help you 
    npm test
    ```
 
-5. **Start development**:
+5. **Verify your setup**:
+
    ```bash
-   npm run dev
+   npm run check   # type check, lint, format check
+   npm test        # unit test suite
+   npm run build   # CJS + ESM + declarations
    ```
+
+   All three must pass on a clean checkout before you start making changes.
 
 ### Project Structure
 
 ```
 google-maps-vector-engine/
-├── src/                    # Source code
-│   ├── MVTSource.ts       # Main controller
-│   ├── MVTLayer.ts        # Layer management
-│   ├── MVTFeature.ts      # Feature representation
-│   ├── Mercator.ts        # Coordinate utilities
-│   ├── ColorUtils.ts      # Color operations
-│   ├── DebugLogger.ts     # Logging utilities
-│   ├── types.ts           # TypeScript definitions
-│   └── index.ts           # Public API exports
-├── tests/                  # Test suite
-│   ├── unit/              # Unit tests
-│   ├── integration/       # Integration tests
-│   └── utils/             # Test utilities
-└── docs/              # Documentation
+├── index.ts                    # Public API exports (repo root, not src/)
+├── src/
+│   ├── MVTSource.ts            # google.maps.MapType, and the coordinator
+│   ├── MVTLayer.ts             # One vector tile layer: parsing and hit testing
+│   ├── MVTFeature.ts           # One feature: drawing, paths, containment
+│   ├── Mercator.ts             # Projection and geometry maths
+│   ├── ColorUtils.ts           # Colour parsing and alpha handling
+│   ├── DebugLogger.ts          # Logging
+│   ├── errors.ts               # MVTError, MVTOptionsError
+│   ├── types.ts                # Public type definitions
+│   ├── events/EventEmitter.ts  # on/off/once
+│   ├── geojson/                # Polygon merging (lazily imported; owns Turf)
+│   ├── render/                 # Canvas, DPR, and the frame schedulers
+│   ├── style/StyleResolver.ts  # Style resolution and caching
+│   └── tiles/TileLoader.ts     # Fetch, abort, retry, availability manifest
+├── tests/
+│   ├── unit/                   # Run by `npm test`
+│   ├── performance/            # Wall-clock benchmarks, excluded from `npm test`
+│   ├── fixtures/               # A real .pbf tile, used by the decode tests
+│   └── utils/                  # Mocks and the canvas geometry helper
+├── examples/                   # Runnable demo, plus React and Vue bindings
+├── scripts/                    # Fixture generation, docs check, benchmarks
+└── docs/                       # Documentation
 ```
+
+`src/geojson/` is loaded through a dynamic `import()` and is the only place
+Turf is used, so it stays out of the entry chunk for consumers who never merge
+features across tiles. Keep it that way.
 
 ## 📝 Contributing Guidelines
 
@@ -114,7 +132,9 @@ npm run test:watch
 
 ### Test Guidelines
 
-1. **Write tests for new features** - aim for 90%+ coverage
+1. **Write tests for new features.** Coverage thresholds are enforced at
+   85% statements / 85% branches / 80% functions / 85% lines, and the suite
+   currently sits above all four. A PR that drops below fails CI.
 2. **Update tests when changing behavior**
 3. **Use descriptive test names**
 4. **Test edge cases and error conditions**
@@ -154,15 +174,16 @@ describe('Component/Feature Name', () => {
 We use ESLint and Prettier for consistent formatting:
 
 ```bash
-# Check formatting
-npm run lint
-
-# Fix formatting issues
-npm run lint:fix
-
-# Format code
-npm run format
+npm run lint          # ESLint, including type-aware rules
+npm run lint:fix      # ESLint with autofix
+npm run format        # Prettier, writing changes
+npm run format:check  # Prettier, checking only
+npm run check         # typecheck + lint + format:check + doc snippets
 ```
+
+`npm run check` is what CI runs. It includes `check:docs`, which type-checks
+every TypeScript snippet in the Markdown files — a snippet nobody compiles
+drifts, and these did.
 
 ### Naming Conventions
 
@@ -240,12 +261,13 @@ export function getTileCoord(latLng: LatLng, zoom: number): TileCoord {
 
 4. **Update documentation** if needed
 
-5. **Run the full test suite**:
+5. **Run the full gate**:
 
    ```bash
-   npm test
-   npm run lint
-   npm run build
+   npm run check         # types, lint, formatting, doc snippets
+   npm test              # unit suite
+   npm run test:coverage # thresholds
+   npm run build         # CJS + ESM + browser bundle + declarations
    ```
 
 6. **Commit with clear messages**:
@@ -296,9 +318,10 @@ test(mvtsource): add tests for error handling
 
 ### Pull Request Checklist
 
-- [ ] Tests pass (`npm test`)
-- [ ] Linting passes (`npm run lint`)
+- [ ] Tests pass (`npm test`) and coverage holds (`npm run test:coverage`)
+- [ ] `npm run check` passes (types, lint, formatting, doc snippets)
 - [ ] Build succeeds (`npm run build`)
+- [ ] Bundle size budget holds (`npm run size`)
 - [ ] Documentation updated (if applicable)
 - [ ] Changelog updated (for user-facing changes)
 - [ ] Examples added/updated (for new features)
@@ -332,11 +355,8 @@ Include:
 
 ## 🏆 Recognition
 
-Contributors will be:
-
-- **Listed in CONTRIBUTORS.md**
-- **Mentioned in release notes** for significant contributions
-- **Given credit** in documentation for major features
+Contributors are credited in the release notes for the version their change
+ships in, and in the commit history.
 
 ## 📞 Getting Help
 

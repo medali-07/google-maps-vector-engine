@@ -23,7 +23,7 @@ export class ColorUtils {
     if (this._colorCache.size >= this.MAX_CACHE_SIZE) {
       const entries = Array.from(this._colorCache.entries());
       const keepCount = Math.floor(this.MAX_CACHE_SIZE * 0.7);
-      
+
       this._colorCache.clear();
       entries.slice(-keepCount).forEach(([key, value]) => {
         this._colorCache.set(key, value);
@@ -37,16 +37,16 @@ export class ColorUtils {
    */
   static convertColorWithOpacity(colorStr: string, opacity: number): string {
     if (colorStr === 'transparent') return 'transparent';
-    
+
     const cacheKey = colorStr.toLowerCase();
     let rgbValues = this._colorCache.get(cacheKey);
-    
+
     if (rgbValues === undefined) {
       rgbValues = this._parseColorInternal(colorStr);
       this._cleanupCache();
       this._colorCache.set(cacheKey, rgbValues);
     }
-    
+
     if (rgbValues) {
       return `rgba(${rgbValues.r}, ${rgbValues.g}, ${rgbValues.b}, ${opacity})`;
     }
@@ -55,15 +55,20 @@ export class ColorUtils {
   }
 
   private static _parseColorInternal(colorStr: string): { r: number; g: number; b: number; a?: number } | null {
+    // Every branch below works on the normalised string. They used to read the
+    // original, so a leading space or an uppercase `RGB(` fell through to null
+    // - and CSS colours are case-insensitive, so `fillStyle: 'RGB(1,2,3)'` is
+    // perfectly valid input that silently defeated fillOpacity and the hover
+    // fallback.
     const lowerColor = colorStr.toLowerCase().trim();
-    
+
     const commonColor = this.COMMON_COLORS.get(lowerColor);
     if (commonColor) {
       return commonColor;
     }
 
-    if (colorStr.startsWith('#')) {
-      const hex = colorStr.slice(1);
+    if (lowerColor.startsWith('#')) {
+      const hex = lowerColor.slice(1);
       if (hex.length === 3) {
         return {
           r: parseInt(hex[0] + hex[0], 16),
@@ -79,7 +84,7 @@ export class ColorUtils {
       }
     }
 
-    const rgbMatch = colorStr.match(/rgba?\((.+)\)/);
+    const rgbMatch = lowerColor.match(/rgba?\((.+)\)/);
     if (rgbMatch) {
       const values = rgbMatch[1].split(',').map((v) => parseFloat(v.trim()));
       if (values.length >= 3) {
@@ -122,19 +127,57 @@ export class ColorUtils {
   }
 
   /**
+   * Alpha channel of a color string.
+   *
+   * Returns 1 for any color that declares no alpha, and 0 for `transparent`.
+   * Returns null when the string cannot be parsed at all, so callers can tell
+   * "opaque" apart from "unknown" and leave unrecognised colors alone.
+   */
+  static getAlpha(colorStr: string): number | null {
+    if (colorStr === 'transparent') return 0;
+
+    const parsed = this.parseRgb(colorStr);
+    if (!parsed) return null;
+
+    return parsed.a !== undefined ? parsed.a : 1;
+  }
+
+  /**
+   * Same color with its alpha multiplied by `factor`, clamped to [0, 1].
+   *
+   * Used for the hover fallback, which previously did a literal `"0.3"` to
+   * `"0.5"` substring replacement on the color string - gated, additionally,
+   * on the color *not* starting with `rgba(`, so it silently did nothing for
+   * every one of the library's own defaults.
+   *
+   * Returns the input unchanged when it cannot be parsed or is transparent.
+   */
+  static scaleAlpha(colorStr: string, factor: number): string {
+    if (colorStr === 'transparent') return colorStr;
+
+    const parsed = this.parseRgb(colorStr);
+    if (!parsed) return colorStr;
+
+    const current = parsed.a !== undefined ? parsed.a : 1;
+    const scaled = Math.min(1, Math.max(0, current * factor));
+
+    return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${scaled})`;
+  }
+
+  /**
    * Parse RGB values from a color string
    * Returns null if unable to parse
    */
   static parseRgb(colorStr: string): { r: number; g: number; b: number; a?: number } | null {
     const cacheKey = colorStr.toLowerCase().trim();
     let cachedResult = this._colorCache.get(cacheKey);
-    
+
     if (cachedResult === undefined) {
       cachedResult = this._parseColorInternal(colorStr);
       this._cleanupCache();
       this._colorCache.set(cacheKey, cachedResult);
     }
-    
+
     return cachedResult;
   }
 }

@@ -9,17 +9,17 @@ class PerformanceReporter {
     this.results = [];
   }
 
-  onTestResult(test, testResult, aggregatedResult) {
+  onTestResult(test, testResult, _aggregatedResult) {
     // Extract performance data from test results
-    testResult.testResults.forEach(result => {
+    testResult.testResults.forEach((result) => {
       if (result.status === 'passed') {
         // Look for console.log performance messages
         const performanceLogs = result.ancestorTitles.join(' > ') + ' > ' + result.title;
-        
+
         this.results.push({
           testName: performanceLogs,
           duration: result.duration || 0,
-          status: result.status
+          status: result.status,
         });
       }
     });
@@ -32,16 +32,11 @@ class PerformanceReporter {
   }
 
   generatePerformanceReport() {
-    const reportLines = [
-      '',
-      '🚀 PERFORMANCE TEST RESULTS',
-      '='.repeat(80),
-      ''
-    ];
+    const reportLines = ['', '🚀 PERFORMANCE TEST RESULTS', '='.repeat(80), ''];
 
     // Summary statistics
     const totalTests = this.results.length;
-    const passedTests = this.results.filter(r => r.status === 'passed').length;
+    const passedTests = this.results.filter((r) => r.status === 'passed').length;
     const avgDuration = this.results.reduce((sum, r) => sum + r.duration, 0) / totalTests;
 
     reportLines.push(`📊 Summary:`);
@@ -78,7 +73,7 @@ class PerformanceReporter {
     if (process.env.PERFORMANCE_OUTPUT_FILE) {
       const fs = require('fs');
       const path = require('path');
-      
+
       const outputPath = path.resolve(process.env.PERFORMANCE_OUTPUT_FILE);
       fs.writeFileSync(outputPath, reportLines.join('\n'));
       console.log(`📁 Performance report saved to: ${outputPath}`);

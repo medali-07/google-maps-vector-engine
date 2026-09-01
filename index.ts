@@ -1,6 +1,6 @@
 /**
  * google-maps-vector-engine - High Performance Vector Tiles for Google Maps
- * 
+ *
  * Modern TypeScript implementation for efficient rendering of Mapbox Vector Tiles
  * with fast feature lookups, batched rendering, and comprehensive event handling.
  */
@@ -25,44 +25,87 @@ export type {
   TileCoord,
   TileBounds,
   LatLng,
-  
+
   // Style types
   FeatureStyle,
   FeatureStyleFunction,
-  
+  StyleContext,
+
   // Event types
   MVTMouseEvent,
   MouseEventOptions,
-  
+  MVTSourceEvents,
+  ClickEventCallback,
+  HoverEventCallback,
+
+  // Tile types
+  TileContext,
+  TileFeatureData,
+  CanvasAndFeatures,
+
+  // Feature types
+  FeatureProperties,
+  GeoJSONFeature,
+  GeoJSONPosition,
+  GeoJSONCoordinates,
+  FeatureReplacementFunction,
+  FeatureSelectionCallback,
+
   // Configuration types
   MVTSourceOptions,
   MVTLayerOptions,
   MVTFeatureOptions,
-  
+  SelectionOptions,
+  MVTSourceStats,
+
   // Manifest types
   TileManifest,
   TileAvailabilitySource,
-  
+
   // Function types
   CustomDrawFunction,
   FilterFunction,
-  IDExtractorFunction
+  IDExtractorFunction,
 } from './src/types';
+
+// Errors thrown by the constructor when an option is missing or unusable.
+export { MVTError, MVTOptionsError } from './src/errors';
 
 export { GeometryType } from './src/types';
 
 /**
  * Create MVTSource with sensible defaults
  */
-export function createMVTSource(map: google.maps.Map, url: string, options: Partial<import('./src/types').MVTSourceOptions> = {}) {
+export function createMVTSource(
+  map: google.maps.Map,
+  url: string,
+  options: Partial<import('./src/types').MVTSourceOptions> = {},
+) {
   return new MVTSource(map, {
     url,
     tileSize: 256,
     cache: true,
     debug: false,
-    ...options
+    ...options,
   });
 }
+
+/**
+ * Colour-vision-safe palette, from Okabe and Ito's eight-colour set.
+ *
+ * Every pair in this set stays distinguishable under protanopia, deuteranopia
+ * and tritanopia, which the usual red/green map palettes do not.
+ */
+export const AccessiblePalette = {
+  ORANGE: '#E69F00',
+  SKY_BLUE: '#56B4E9',
+  BLUISH_GREEN: '#009E73',
+  YELLOW: '#F0E442',
+  BLUE: '#0072B2',
+  VERMILLION: '#D55E00',
+  REDDISH_PURPLE: '#CC79A7',
+  BLACK: '#000000',
+} as const;
 
 /**
  * Default style presets
@@ -74,14 +117,14 @@ export const DefaultStyles = {
     lineWidth: 1,
     radius: 4,
   }),
-  
+
   minimal: (): import('./src/types').FeatureStyle => ({
     fillStyle: 'rgba(150, 150, 150, 0.3)',
     strokeStyle: 'rgba(100, 100, 100, 0.8)',
     lineWidth: 1,
     radius: 3,
   }),
-  
+
   highContrast: (): import('./src/types').FeatureStyle => ({
     fillStyle: 'rgba(0, 120, 255, 0.6)',
     strokeStyle: 'rgba(0, 80, 200, 1)',
@@ -90,34 +133,91 @@ export const DefaultStyles = {
     selected: {
       fillStyle: 'rgba(255, 140, 0, 0.8)',
       strokeStyle: 'rgba(255, 100, 0, 1)',
-      lineWidth: 3
+      lineWidth: 3,
     },
     hover: {
       fillStyle: 'rgba(0, 150, 255, 0.7)',
-      lineWidth: 2
-    }
+      lineWidth: 2,
+    },
   }),
-  
+
+  /**
+   * Colour-vision-safe preset for light basemaps.
+   *
+   * Contrast against a typical light basemap (#F2F0EC): outline 4.56:1,
+   * selected outline 3.40:1. Both clear the 3:1 WCAG 2.2 threshold for
+   * non-text contrast.
+   *
+   * Selection is *not* signalled by hue alone. Blue and vermillion differ by
+   * only 1.34:1 in luminance, so they are near-identical in greyscale and to a
+   * monochromat; the 1.5px to 4px outline step is what carries the state.
+   */
+  accessible: (): import('./src/types').FeatureStyle => ({
+    fillStyle: 'rgba(0, 114, 178, 0.25)',
+    strokeStyle: AccessiblePalette.BLUE,
+    lineWidth: 1.5,
+    radius: 5,
+    selected: {
+      fillStyle: 'rgba(213, 94, 0, 0.45)',
+      strokeStyle: AccessiblePalette.VERMILLION,
+      lineWidth: 4,
+      radius: 7,
+    },
+    hover: {
+      fillStyle: 'rgba(0, 114, 178, 0.4)',
+      strokeStyle: AccessiblePalette.BLUE,
+      lineWidth: 2.5,
+    },
+  }),
+
+  /**
+   * Colour-vision-safe preset for dark basemaps.
+   *
+   * Contrast against a typical dark basemap (#242F3E): outline 5.87:1,
+   * selected outline 6.01:1.
+   *
+   * Sky blue and orange differ by only 1.02:1 in luminance - effectively
+   * indistinguishable in greyscale - so, as with `accessible`, the 1.5px to
+   * 4px outline step is what actually distinguishes a selected feature.
+   */
+  dark: (): import('./src/types').FeatureStyle => ({
+    fillStyle: 'rgba(86, 180, 233, 0.22)',
+    strokeStyle: AccessiblePalette.SKY_BLUE,
+    lineWidth: 1.5,
+    radius: 5,
+    selected: {
+      fillStyle: 'rgba(230, 159, 0, 0.45)',
+      strokeStyle: AccessiblePalette.ORANGE,
+      lineWidth: 4,
+      radius: 7,
+    },
+    hover: {
+      fillStyle: 'rgba(86, 180, 233, 0.38)',
+      strokeStyle: AccessiblePalette.SKY_BLUE,
+      lineWidth: 2.5,
+    },
+  }),
+
   // Specialized styles for different geometry types
   selected: {
     polygon: (): import('./src/types').FeatureStyle => ({
       fillStyle: 'rgba(255, 140, 0, 0.7)',
       strokeStyle: 'rgba(255, 100, 0, 1)',
-      lineWidth: 3
+      lineWidth: 3,
     }),
-    
+
     point: (): import('./src/types').FeatureStyle => ({
       fillStyle: 'rgba(255, 140, 0, 0.9)',
       strokeStyle: 'rgba(255, 100, 0, 1)',
       lineWidth: 2,
-      radius: 6
+      radius: 6,
     }),
-    
+
     line: (): import('./src/types').FeatureStyle => ({
       strokeStyle: 'rgba(255, 140, 0, 1)',
-      lineWidth: 4
-    })
-  }
+      lineWidth: 4,
+    }),
+  },
 };
 
 /**
@@ -128,37 +228,41 @@ export const ManifestUtils = {
     return async (): Promise<import('./src/types').TileManifest> => {
       const response = await fetch(apiUrl, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json', ...headers }
+        headers: { 'Content-Type': 'application/json', ...headers },
       });
-      
+
       if (!response.ok) {
         throw new Error(`Failed to fetch tile manifest: ${response.status} ${response.statusText}`);
       }
-      
+
       return response.json();
     };
   },
 
   validateManifest: (manifest: any): manifest is import('./src/types').TileManifest => {
     if (!manifest || typeof manifest !== 'object') return false;
-    
+
     for (const [zoomLevel, xCoords] of Object.entries(manifest)) {
       if (!/^\d+$/.test(zoomLevel) || !xCoords || typeof xCoords !== 'object') return false;
-      
+
       for (const [xCoord, yRanges] of Object.entries(xCoords as any)) {
         if (!/^\d+$/.test(xCoord) || !Array.isArray(yRanges)) return false;
-        
+
         for (const yRange of yRanges) {
-          if (!Array.isArray(yRange) || yRange.length !== 2 || 
-              typeof yRange[0] !== 'number' || typeof yRange[1] !== 'number') {
+          if (
+            !Array.isArray(yRange) ||
+            yRange.length !== 2 ||
+            typeof yRange[0] !== 'number' ||
+            typeof yRange[1] !== 'number'
+          ) {
             return false;
           }
         }
       }
     }
-    
+
     return true;
-  }
+  },
 };
 
 /**
@@ -168,18 +272,21 @@ export const MVTUtils = {
   /**
    * Extract feature ID from a vector tile feature
    */
-  extractFeatureId: (feature: import('@mapbox/vector-tile').VectorTileFeature, defaultProperty: string = 'fid'): string | number => {
+  extractFeatureId: (
+    feature: import('@mapbox/vector-tile').VectorTileFeature,
+    defaultProperty: string = 'fid',
+  ): string | number => {
     // Try feature.id first (most reliable)
     if (feature.id !== undefined && feature.id !== null) {
       return feature.id;
     }
-    
+
     // Try the configured default property
     const defaultValue = feature.properties[defaultProperty];
     if (defaultValue !== undefined && defaultValue !== null && typeof defaultValue !== 'boolean') {
       return defaultValue;
     }
-    
+
     // Try common ID properties
     const commonIdProps = ['id', 'objectid', 'fid', 'gid', 'uid'];
     for (const prop of commonIdProps) {
@@ -188,18 +295,18 @@ export const MVTUtils = {
         return value;
       }
     }
-    
+
     // Last resort: generate a consistent hash from properties
     const propsStr = JSON.stringify(feature.properties);
     let hash = 0;
     for (let i = 0; i < propsStr.length; i++) {
       const char = propsStr.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
+      hash = (hash << 5) - hash + char;
       hash = hash & hash; // Convert to 32-bit integer
     }
     return `generated_${Math.abs(hash)}`;
   },
-  
+
   /**
    * Create a property-based filter function
    */
@@ -209,63 +316,21 @@ export const MVTUtils = {
       return (typeof value === 'string' || typeof value === 'number') && values.includes(value);
     };
   },
-  
+
   /**
    * Create a property-based style function
    */
-  createPropertyBasedStyle: (property: string, styleMap: Record<string | number, import('./src/types').FeatureStyle>) => {
+  createPropertyBasedStyle: (
+    property: string,
+    styleMap: Record<string | number, import('./src/types').FeatureStyle>,
+  ) => {
     return (feature: import('@mapbox/vector-tile').VectorTileFeature): import('./src/types').FeatureStyle => {
       const value = feature.properties[property];
-      return (typeof value === 'string' || typeof value === 'number') 
+      return typeof value === 'string' || typeof value === 'number'
         ? styleMap[value] || DefaultStyles.basic()
         : DefaultStyles.basic();
     };
   },
-  
-  /**
-   * Performance monitoring utilities
-   */
-  performance: {
-    /**
-     * Get basic performance metrics from an MVT source
-     */
-    getMetrics: (mvtSource: any) => {
-      const tiles = Object.keys(mvtSource.mVTLayers).length;
-      const selectedFeatures = mvtSource.getSelectedFeatureIds?.().length || 0;
-      return {
-        tilesLoaded: mvtSource.loadedTilesLen || 0,
-        layersVisible: tiles,
-        featuresSelected: selectedFeatures,
-        debugEnabled: mvtSource.options?.debug || false
-      };
-    },
-    
-    /**
-     * Measure time taken for feature selection
-     */
-    measureSelectionTime: (mvtSource: any, featureIds: (string | number)[]) => {
-      const start = performance.now();
-      mvtSource.setSelectedFeatures?.(featureIds);
-      const end = performance.now();
-      return end - start;
-    },
-    
-    /**
-     * Benchmark feature lookup performance
-     */
-    benchmarkFeatureLookup: (mvtSource: any, sampleSize: number = 100) => {
-      const selectedIds = mvtSource.getSelectedFeatureIds?.() || [];
-      if (selectedIds.length === 0) return 0;
-      
-      const start = performance.now();
-      for (let i = 0; i < sampleSize; i++) {
-        const randomId = selectedIds[Math.floor(Math.random() * selectedIds.length)];
-        mvtSource.getFeature?.(randomId);
-      }
-      const end = performance.now();
-      return (end - start) / sampleSize; // Average time per lookup
-    }
-  }
 };
 
 /**
@@ -273,45 +338,11 @@ export const MVTUtils = {
  */
 export const MVTFactory = {
   /**
-   * Create configuration for administrative boundaries
-   */
-  createAdministrativeConfig: (
-    baseUrl: string, 
-    type: 'communes' | 'departments' | 'iris' | 'postal_code',
-    options: Partial<import('./src/types').MVTSourceOptions> = {}
-  ): import('./src/types').MVTSourceOptions => {
-    const layerMap = {
-      'communes': 'communes',
-      'departments': 'departments', 
-      'iris': 'iris',
-      'postal_code': 'postal_code'
-    };
-    
-    return {
-      url: `${baseUrl.replace(/\/$/, '')}/${type}/{z}/{x}/{y}.pbf`,
-      visibleLayers: [layerMap[type]],
-      style: {
-        fillStyle: 'rgba(70, 130, 180, 0.3)',
-        strokeStyle: 'rgba(70, 130, 180, 0.8)',
-        lineWidth: 1,
-        selected: DefaultStyles.selected.polygon(),
-        hover: {
-          fillStyle: 'rgba(70, 130, 180, 0.5)',
-          lineWidth: 2
-        }
-      },
-      setSelectedOnClick: true,
-      cache: true,
-      ...options
-    };
-  },
-  
-  /**
    * Create high-performance configuration
    */
   createHighPerformanceConfig: (
     url: string,
-    options: Partial<import('./src/types').MVTSourceOptions> = {}
+    options: Partial<import('./src/types').MVTSourceOptions> = {},
   ): import('./src/types').MVTSourceOptions => {
     return {
       url,
@@ -320,7 +351,7 @@ export const MVTFactory = {
       tileSize: 256,
       sourceMaxZoom: 18,
       style: DefaultStyles.minimal(),
-      ...options
+      ...options,
     };
-  }
+  },
 };

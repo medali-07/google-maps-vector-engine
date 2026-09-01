@@ -109,7 +109,7 @@ export function createMockMVTSource(): any {
     isFeatureSelected: jest.fn(() => false),
     getSelectedFeaturesInTile: jest.fn(() => []),
     getSelectedFeatureIds: jest.fn(() => []),
-    setSelectedFeatures: jest.fn(),
+    setSelection: jest.fn(),
     redrawTile: jest.fn(),
     redrawAllTiles: jest.fn(),
     getTileObject: jest.fn(() => ({ x: 0, y: 0, z: 10 })),
@@ -167,6 +167,8 @@ export function createMockCanvasContext(): CanvasRenderingContext2D {
     restore: jest.fn(),
     scale: jest.fn(),
     translate: jest.fn(),
+    setTransform: jest.fn(),
+    resetTransform: jest.fn(),
     isPointInPath: jest.fn().mockReturnValue(true),
     canvas: {
       width: 256,

@@ -1,5 +1,6 @@
 # 🗺️ Google Maps Vector Engine
 
+[![CI](https://github.com/medali-07/google-maps-vector-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/medali-07/google-maps-vector-engine/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/google-maps-vector-engine)](https://www.npmjs.com/package/google-maps-vector-engine)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-blue)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -10,16 +11,41 @@
 
 Google Maps doesn't natively support vector tiles (PBF format) - only raster tiles (PNG/JPEG). This library enables vector tile rendering with native-like performance and full interactivity impossible with static raster tiles.
 
+## 🎬 Try it
+
+[`examples/index.html`](./examples/index.html) is a runnable demo against
+[MapLibre's public tile server](https://demotiles.maplibre.org/) — world country
+polygons, no key needed for the data:
+
+```bash
+npm install && npm run build
+open examples/index.html      # paste a Google Maps browser key, or use ?key=...
+```
+
+Click a country to select it, hover for the pointer cursor, switch between four
+styling modes, toggle layers, drag the opacity slider, and watch `getStats()`
+and the event log update live. There are [React and Vue](./examples/) bindings
+alongside it.
+
 ## ⚡ Quick Start
 
 ```bash
 npm install google-maps-vector-engine
 ```
 
+Or drop it straight into a page — no build step, no bundler:
+
+```html
+<script src="https://unpkg.com/google-maps-vector-engine@1"></script>
+<script>
+  const { MVTSource, DefaultStyles } = GoogleMapsVectorEngine;
+</script>
+```
+
 ```typescript
 import { MVTSource, DefaultStyles } from 'google-maps-vector-engine';
 
-const map = new google.maps.Map(document.getElementById('map'), {
+const map = new google.maps.Map(document.getElementById('map') as HTMLElement, {
   center: { lat: 46.52, lng: 6.57 },
   zoom: 9,
 });
@@ -60,7 +86,7 @@ const style = {
 };
 
 // Dynamic style
-const styleFunction = (feature) => {
+const styleFunction: FeatureStyleFunction = (feature) => {
   return feature.properties.important ? { fillStyle: 'red' } : { fillStyle: 'blue' };
 };
 
@@ -70,22 +96,52 @@ mvtSource.setStyle(styleFunction);
 ## 🔧 Key Methods
 
 ```typescript
-// Feature selection
-mvtSource.setSelectedFeatures(['feature1', 'feature2']);
+// Feature selection - one method, three modes
+mvtSource.setSelection(['feature1', 'feature2']); // replace (default)
+mvtSource.setSelection(['feature3'], { mode: 'add' });
+mvtSource.setSelection(['feature1'], { mode: 'remove' });
 const selectedIds = mvtSource.getSelectedFeatureIds();
-const selectedFeatures = mvtSource.getSelectedFeatures();
+
+// Zoom to a feature
+mvtSource.fitBounds('feature1');
+
+// Events - add, remove and replace listeners at any time
+const stop = mvtSource.on('selectionchange', ({ selected }) => console.log(selected));
+mvtSource.on('tileerror', ({ tileId, status }) => console.warn(tileId, status));
+stop();
 
 // Layer management
 mvtSource.setVisibleLayers(['boundaries', 'roads']);
-const visibleLayers = mvtSource.getVisibleLayers();
+mvtSource.setFilter((feature) => Boolean(feature.properties.active));
 
-// Filtering
-mvtSource.setFilter((feature) => feature.properties.active);
+// Visibility, without tearing anything down
+mvtSource.setOpacity(0.5);
+mvtSource.hide();
+mvtSource.show();
 
-// Performance & cleanup
+// Diagnostics & cleanup
 await mvtSource.tileLoaded(); // Wait for tiles to load
-mvtSource.clearAllHoveredFeatures();
+console.log(mvtSource.getStats());
 mvtSource.dispose();
+```
+
+### Typed feature properties
+
+`MVTSource` is generic over your feature properties, so `event.feature` is
+typed all the way through:
+
+```typescript
+interface Commune {
+  name: string;
+  population: number;
+}
+
+const source = new MVTSource<Commune>(map, {
+  url: tileUrl,
+  onClick: (event) => {
+    event.feature?.properties.name; // string
+  },
+});
 ```
 
 ## 🔬 Performance Testing
@@ -115,12 +171,28 @@ See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for 
 | **[⚡ Performance](./docs/PERFORMANCE.md)**         | Optimization strategies           |
 | **[🔧 Troubleshooting](./docs/TROUBLESHOOTING.md)** | Common issues and solutions       |
 | **[🚀 Advanced](./docs/ADVANCED.md)**               | Complex patterns and integrations |
+| **[🔀 Migration](./MIGRATION.md)**                  | Upgrading from 0.2.x to 1.0       |
+| **[🎬 Examples folder](./examples/)**               | Runnable demo, React and Vue      |
 
 ## 📦 Requirements
 
-- Node.js 16+
+- Node.js 18+
 - Google Maps API key
 - Modern browser with ES6+ support
+
+## 📦 Package
+
+Ships CommonJS, ESM and a self-contained browser bundle, with types for each:
+
+| Entry                                   | Condition          | Notes                        |
+| --------------------------------------- | ------------------ | ---------------------------- |
+| `dist/index.js`                         | `require()`        | Dependencies stay external   |
+| `dist/index.mjs`                        | `import`           | Dependencies stay external   |
+| `dist/google-maps-vector-engine.min.js` | `<script>` / unpkg | Everything inlined, minified |
+
+The GeoJSON merge subsystem — the only thing that pulls in Turf — is loaded on
+first use, so it stays out of the entry chunk unless you actually merge
+features across tiles.
 
 ## 🔧 Technical Notes
 
@@ -130,7 +202,9 @@ See [Performance Guide](./docs/PERFORMANCE.md#performance-testing-commands) for 
 
 ## 🤝 Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and guidelines.
+See [CONTRIBUTING.md](https://github.com/medali-07/google-maps-vector-engine/blob/main/CONTRIBUTING.md)
+for development setup and guidelines. That file is intentionally not published
+to npm, so this link is absolute rather than relative.
 
 ## 📄 License
 

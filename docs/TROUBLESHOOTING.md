@@ -32,66 +32,72 @@ const mvtSource = new MVTSource(map, options);
 ### Tiles Not Loading
 
 **Diagnosis**:
+
 1. Check browser Network tab for failed requests
 2. Verify tile URL template is correct
 3. Check CORS headers on tile server
 
 **Solution**:
+
 ```typescript
 // Enable debug mode
 const mvtSource = new MVTSource(map, {
   url: 'https://your-tiles.com/{z}/{x}/{y}.pbf',
-  debug: true  // Shows detailed loading info
+  debug: true, // Shows detailed loading info
 });
 
 // Test tile URL manually
 fetch('https://your-tiles.com/10/512/512.pbf')
-  .then(response => {
+  .then((response) => {
     console.log('Tile response:', response.status);
     return response.arrayBuffer();
   })
-  .then(data => console.log('Tile size:', data.byteLength))
-  .catch(error => console.error('Tile error:', error));
+  .then((data) => console.log('Tile size:', data.byteLength))
+  .catch((error) => console.error('Tile error:', error));
 ```
 
 ### CORS Errors
 
 **Server-side solution** (Apache):
+
 ```apache
 Header always set Access-Control-Allow-Origin "*"
 Header always set Access-Control-Allow-Methods "GET, OPTIONS"
 ```
 
 **Development proxy** (webpack):
+
 ```javascript
 module.exports = {
   devServer: {
     proxy: {
       '/tiles': {
         target: 'https://your-tile-server.com',
-        changeOrigin: true
-      }
-    }
-  }
+        changeOrigin: true,
+      },
+    },
+  },
 };
 ```
 
 ### Poor Performance
 
 **Solutions**:
+
 ```typescript
 const mvtSource = new MVTSource(map, {
   url: 'https://tiles.com/{z}/{x}/{y}.pbf',
-  cache: true,                    // Essential
-  visibleLayers: ['boundaries'],  // Limit layers
+  cache: true, // Essential
+  visibleLayers: ['boundaries'], // Limit layers
   style: DefaultStyles.minimal(), // Simple styles
-  debug: false                    // Disable in production
+  debug: false, // Disable in production
 });
 ```
 
 ### Features Not Clickable
 
 **Solution**:
+
 ```typescript
 const mvtSource = new MVTSource(map, {
   url: 'https://tiles.com/{z}/{x}/{y}.pbf',
@@ -102,13 +108,14 @@ const mvtSource = new MVTSource(map, {
     } else {
       console.log('No feature found');
     }
-  }
+  },
 });
 ```
 
 ### Memory Leaks
 
 **Solution**: Always dispose when done
+
 ```typescript
 // React
 useEffect(() => {
@@ -128,14 +135,16 @@ onUnmounted(() => {
 ## Debug Mode
 
 Enable for development:
+
 ```typescript
 const mvtSource = new MVTSource(map, {
   url: 'https://tiles.com/{z}/{x}/{y}.pbf',
-  debug: true
+  debug: true,
 });
 ```
 
 Shows:
+
 - Tile loading times
 - Feature parsing stats
 - Click detection details
@@ -145,24 +154,26 @@ Shows:
 ## Environment Setup
 
 ### Webpack
+
 ```javascript
 module.exports = {
   resolve: {
     fallback: {
-      "path": false,
-      "fs": false
-    }
-  }
+      path: false,
+      fs: false,
+    },
+  },
 };
 ```
 
 ### Vite
+
 ```typescript
 export default defineConfig({
   define: { global: 'globalThis' },
   optimizeDeps: {
-    include: ['google-maps-vector-engine']
-  }
+    include: ['google-maps-vector-engine'],
+  },
 });
 ```
 
