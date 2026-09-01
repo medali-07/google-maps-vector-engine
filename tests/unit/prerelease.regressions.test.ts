@@ -332,11 +332,23 @@ describe('MVTSource: repeated world copies', () => {
     const second = source.getTile(point(9, 2), 3, document);
     expect((source as any)._visibleTiles['3:1:2'].canvas).toBe(second);
 
+    // Stand in for the decoded tile the fetch would have attached.
+    const decoded = { layers: {} };
+    (source as any)._visibleTiles['3:1:2'].vectorTile = decoded;
+
     source.releaseTile(second);
 
     // Repaints used to keep drawing into the released canvas while the copy
     // still on screen never updated again.
     expect((source as any)._visibleTiles['3:1:2'].canvas).toBe(first);
+
+    // The decoded tile must survive the repoint: redrawTile() refuses to
+    // schedule anything for a context without one, so dropping it here turned
+    // every later repaint of this tile into a silent no-op.
+    expect((source as any)._visibleTiles['3:1:2'].vectorTile).toBe(decoded);
+    const schedule = jest.spyOn((source as any)._redraws, 'schedule');
+    source.redrawTile('3:1:2');
+    expect(schedule).toHaveBeenCalledWith('3:1:2');
   });
 });
 

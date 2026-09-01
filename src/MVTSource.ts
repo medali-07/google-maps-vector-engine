@@ -579,17 +579,13 @@ export class MVTSource<TProps extends object = FeatureProperties> implements goo
         // If the released copy is the one _visibleTiles points at, repoint it
         // at a surviving mount - otherwise every later repaint of this tile
         // would draw into a detached canvas while the copy still on screen
-        // never updated again.
-        if (this._visibleTiles[tileId]?.canvas === tile && canvas instanceof HTMLCanvasElement) {
-          const zoom = this.getTileObject(tileId).z;
-          this._visibleTiles[tileId] = {
-            id: tileId,
-            canvas,
-            zoom,
-            tileSize: this._tileSize,
-            pixelRatio: this._pixelRatio,
-            parentId: this._getParentId(tileId),
-          };
+        // never updated again. Only the canvas changes: the rest of the
+        // context - the decoded vectorTile above all, without which
+        // redrawTile() and _repaintTiles() refuse to repaint at all - must
+        // carry over.
+        const pointedAt = this._visibleTiles[tileId];
+        if (pointedAt?.canvas === tile && canvas instanceof HTMLCanvasElement) {
+          this._visibleTiles[tileId] = { ...pointedAt, canvas };
         }
         this.logger.log(`Released one copy of tile ${tileId}; others still mounted`);
         return;
