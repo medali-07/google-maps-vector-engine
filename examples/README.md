@@ -25,7 +25,7 @@ To run it with no build step at all, swap the local script tag for the CDN
 copy, which is what a `<script>`-tag integration looks like in production:
 
 ```html
-<script src="https://unpkg.com/google-maps-vector-engine"></script>
+<script src="https://unpkg.com/google-maps-vector-engine@1"></script>
 <script>
   const { MVTSource, DefaultStyles } = GoogleMapsVectorEngine;
 </script>

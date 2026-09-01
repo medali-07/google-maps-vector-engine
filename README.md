@@ -36,7 +36,7 @@ npm install google-maps-vector-engine
 Or drop it straight into a page — no build step, no bundler:
 
 ```html
-<script src="https://unpkg.com/google-maps-vector-engine"></script>
+<script src="https://unpkg.com/google-maps-vector-engine@1"></script>
 <script>
   const { MVTSource, DefaultStyles } = GoogleMapsVectorEngine;
 </script>

@@ -69,9 +69,15 @@ export class MVTLayer<TProps extends object = FeatureProperties> {
 
     const features: MVTFeature<TProps>[] = [];
 
+    // Ids already seen in this parse, so a second tile feature carrying the
+    // same id registers as an additional part of the first rather than
+    // overwriting it - tilers split one logical feature into several within a
+    // tile (clipped rings, road segments).
+    const seenThisParse = new Set<string | number>();
+
     for (let i = 0; i < vectorTileFeatures.length; i++) {
       const vectorTileFeature = vectorTileFeatures[i];
-      const feature = this._parseVectorTileFeature(mVTSource, vectorTileFeature, tileContext, i);
+      const feature = this._parseVectorTileFeature(mVTSource, vectorTileFeature, tileContext, i, seenThisParse);
       if (feature) {
         features.push(feature);
       }
@@ -89,6 +95,7 @@ export class MVTLayer<TProps extends object = FeatureProperties> {
     vectorTileFeature: VectorTileFeature,
     tileContext: TileContext,
     index: number,
+    seenThisParse: Set<string | number>,
   ): MVTFeature<TProps> | null {
     if (this._filter && typeof this._filter === 'function') {
       if (this._filter(vectorTileFeature, tileContext) === false) {
@@ -96,7 +103,13 @@ export class MVTLayer<TProps extends object = FeatureProperties> {
       }
     }
 
-    const featureId = this._getIDForLayerFeature(vectorTileFeature) || index;
+    // `?? index` rather than `|| index`: 0 and '' are legitimate feature ids
+    // (the MVT spec allows id 0), and the falsy fallback replaced them with a
+    // tile-local index - a different identity in every tile the feature spans,
+    // and one that can alias a real feature carrying that id.
+    const featureId = this._getIDForLayerFeature(vectorTileFeature) ?? index;
+    const isAdditionalPart = seenThisParse.has(featureId);
+    seenThisParse.add(featureId);
     let mVTFeature = this._mVTFeatures[featureId];
 
     const shouldBeSelected = mVTSource.isFeatureSelected?.(featureId) || false;
@@ -121,7 +134,7 @@ export class MVTLayer<TProps extends object = FeatureProperties> {
     } else {
       const baseStyle = this._getFeatureStyle(vectorTileFeature);
       mVTFeature.setStyle(baseStyle);
-      mVTFeature.addTileFeature(vectorTileFeature, tileContext);
+      mVTFeature.addTileFeature(vectorTileFeature, tileContext, isAdditionalPart);
 
       if (mVTFeature.selected !== shouldBeSelected) {
         mVTFeature.setSelected(shouldBeSelected);
@@ -129,6 +142,10 @@ export class MVTLayer<TProps extends object = FeatureProperties> {
       if (mVTFeature.hovered !== shouldBeHovered) {
         mVTFeature.hovered = shouldBeHovered;
       }
+
+      // An additional part joined an existing entry; the feature is already
+      // in this parse's features array, so do not draw it twice.
+      if (isAdditionalPart) return null;
     }
 
     return mVTFeature;

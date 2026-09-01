@@ -52,8 +52,10 @@ export class TileLoader {
   /** In-flight requests, so they can be aborted on release and dispose. */
   private _requests: Map<string, AbortController> = new Map();
 
-  /** Pending retry timers, cancelled on dispose. */
-  private _retryTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+  /** Pending retry timers by tile id, cancelled on release and dispose. A
+   *  retry that only checked for disposal could re-fetch — and fully revive
+   *  the state of — a tile Google Maps had already released. */
+  private _retryTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
   private _manifestSource?: TileAvailabilitySource;
   private _resolvedManifest?: TileManifest;
@@ -149,12 +151,17 @@ export class TileLoader {
   // Fetching
   // ---------------------------------------------------------------------------
 
-  /** Abort an in-flight request for a tile, if any. */
+  /** Abort an in-flight request for a tile, if any, and cancel its retry. */
   abort(tileId: string): void {
     const controller = this._requests.get(tileId);
     if (controller) {
       controller.abort();
       this._requests.delete(tileId);
+    }
+    const retryTimer = this._retryTimers.get(tileId);
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer);
+      this._retryTimers.delete(tileId);
     }
   }
 
@@ -232,10 +239,10 @@ export class TileLoader {
           const backoff = TileLoader.RETRY_BASE_MS * Math.pow(2, attempt);
           this.logger.warn(`Tile ${src} failed (attempt ${attempt + 1}), retrying in ${backoff}ms`);
           const retryTimer = setTimeout(() => {
-            this._retryTimers.delete(retryTimer);
+            this._retryTimers.delete(tileContext.id);
             if (!this._callbacks.isDisposed()) this.fetch(tileContext, tileCoord, attempt + 1);
           }, backoff);
-          this._retryTimers.add(retryTimer);
+          this._retryTimers.set(tileContext.id, retryTimer);
           return;
         }
 

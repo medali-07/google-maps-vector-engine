@@ -1,0 +1,18 @@
+{
+  "//": "Compile check for the React examples, run by `npm run check` via check:examples. Maps the package name to the repo's source entry so the examples are checked against the real API without a build step.",
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+    "types": ["google.maps", "react"],
+    "paths": {
+      "google-maps-vector-engine": ["../../index.ts"]
+    }
+  },
+  "include": ["./**/*.tsx"]
+}

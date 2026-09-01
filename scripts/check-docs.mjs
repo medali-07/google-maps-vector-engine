@@ -289,10 +289,16 @@ fs.rmSync(dir, { recursive: true, force: true });
 let output = '';
 let failed = false;
 try {
-  execFileSync(path.join(ROOT, 'node_modules/.bin/tsc'), ['--project', path.join(stage, 'tsconfig.json')], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  // Spawn tsc through the current Node binary rather than the .bin shim: the
+  // extensionless shim is POSIX-only, so execFileSync of it fails on Windows.
+  execFileSync(
+    process.execPath,
+    [path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'), '--project', path.join(stage, 'tsconfig.json')],
+    {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
 } catch (error) {
   failed = true;
   output = `${error.stdout || ''}${error.stderr || ''}`;

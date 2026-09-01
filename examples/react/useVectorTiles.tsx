@@ -33,6 +33,11 @@ export function useVectorTiles<TProps extends object = Record<string, unknown>>(
   options: MVTSourceOptions<TProps>,
 ): UseVectorTilesResult<TProps> {
   const sourceRef = useRef<MVTSource<TProps> | null>(null);
+  // Mirrored into state so consumers re-render when the source appears: a ref
+  // mutation inside the effect schedules no render, and returning
+  // `sourceRef.current` from the render phase would stay null until some
+  // unrelated update happened by.
+  const [source, setSource] = useState<MVTSource<TProps> | null>(null);
   const [selected, setSelected] = useState<(string | number)[]>([]);
   const [stats, setStats] = useState<MVTSourceStats | null>(null);
   const [error, setError] = useState<MVTOptionsError | null>(null);
@@ -42,12 +47,17 @@ export function useVectorTiles<TProps extends object = Record<string, unknown>>(
   // the url is treated as identifying; call the setters for the rest.
   const url = options.url;
 
+  // What the source is currently using, so the setter effects below can tell
+  // a real change from the identity churn of a fresh options literal.
+  const appliedStyle = useRef(options.style);
+  const appliedLayers = useRef(options.visibleLayers);
+
   useEffect(() => {
     if (!map) return;
 
-    let source: MVTSource<TProps>;
+    let created: MVTSource<TProps>;
     try {
-      source = new MVTSource<TProps>(map, options);
+      created = new MVTSource<TProps>(map, options);
     } catch (constructionError) {
       if (constructionError instanceof MVTOptionsError) {
         setError(constructionError);
@@ -56,37 +66,58 @@ export function useVectorTiles<TProps extends object = Record<string, unknown>>(
       throw constructionError;
     }
 
-    sourceRef.current = source;
+    sourceRef.current = created;
+    appliedStyle.current = options.style;
+    appliedLayers.current = options.visibleLayers;
+    setSource(created);
     setError(null);
 
-    const stopSelection = source.on('selectionchange', ({ selected: ids }) => setSelected(ids));
-    const stopIdle = source.on('idle', () => setStats(source.getStats()));
+    const stopSelection = created.on('selectionchange', ({ selected: ids }) => setSelected(ids));
+    const stopIdle = created.on('idle', () => setStats(created.getStats()));
 
     return () => {
       stopSelection();
       stopIdle();
-      source.dispose();
+      created.dispose();
       sourceRef.current = null;
+      setSource(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, url]);
 
-  // Push style changes through the setter rather than rebuilding the source,
-  // which would discard every decoded tile.
+  // Push style and layer changes through the setters rather than rebuilding
+  // the source, which would discard every decoded tile. Both are guarded
+  // against identity churn: `options` is usually a fresh literal each render,
+  // and calling a setter per render would mean a full redraw per render.
+  // A style function must be memoised by the caller (useMemo) — identity is
+  // the only change signal a function gives us.
   useEffect(() => {
-    if (options.style) sourceRef.current?.setStyle(options.style);
+    if (options.style && options.style !== appliedStyle.current) {
+      appliedStyle.current = options.style;
+      sourceRef.current?.setStyle(options.style);
+    }
   }, [options.style]);
 
+  // Arrays are compared by content, so an inline `visibleLayers: [...]`
+  // literal does not trigger a redraw per render.
   useEffect(() => {
-    sourceRef.current?.setVisibleLayers(options.visibleLayers);
-  }, [options.visibleLayers]);
+    const next = options.visibleLayers;
+    const prev = appliedLayers.current;
+    const unchanged =
+      next === prev ||
+      (Array.isArray(next) &&
+        Array.isArray(prev) &&
+        next.length === prev.length &&
+        next.every((layer, i) => layer === prev[i]));
+    if (!unchanged) {
+      appliedLayers.current = next;
+      sourceRef.current?.setVisibleLayers(next);
+    }
+  });
 
-  const setSelection = useCallback(
-    (ids: (string | number)[], mode: 'replace' | 'add' | 'remove' = 'replace') => {
-      sourceRef.current?.setSelection(ids, { mode });
-    },
-    [],
-  );
+  const setSelection = useCallback((ids: (string | number)[], mode: 'replace' | 'add' | 'remove' = 'replace') => {
+    sourceRef.current?.setSelection(ids, { mode });
+  }, []);
 
-  return { source: sourceRef.current, selected, stats, error, setSelection };
+  return { source, selected, stats, error, setSelection };
 }

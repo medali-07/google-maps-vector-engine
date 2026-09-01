@@ -43,6 +43,12 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
    *  different device coordinates in each tile it spans. */
   private _geometryHashes: Map<string, string> = new Map();
 
+  /** Additional same-id MVT features in a tile beyond the first. Tilers split
+   *  one logical feature into several tile features (clipped rings, road
+   *  segments); storing only one meant every later part silently overwrote
+   *  the previous one, so only the last part was drawn and hit-tested. */
+  private _extraParts: Map<string, TileFeatureData[]> = new Map();
+
   constructor(options: MVTFeatureOptions<TProps>) {
     this.mVTSource = options.mVTSource;
     this.selected = options.selected;
@@ -61,13 +67,28 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
   /**
    * Add a tile feature to this MVT feature
    */
-  addTileFeature(vectorTileFeature: VectorTileFeature, tileContext: TileContext): void {
-    this.tiles[tileContext.id] = {
+  addTileFeature(vectorTileFeature: VectorTileFeature, tileContext: TileContext, additionalPart = false): void {
+    const part: TileFeatureData = {
       vectorTileFeature,
       divisor: vectorTileFeature.extent / tileContext.tileSize,
       context2d: null,
       paths2d: null,
     };
+
+    if (additionalPart && this.tiles[tileContext.id]) {
+      // A further part of this feature within the same tile parse: keep it
+      // alongside the first rather than replacing it.
+      const parts = this._extraParts.get(tileContext.id);
+      if (parts) {
+        parts.push(part);
+      } else {
+        this._extraParts.set(tileContext.id, [part]);
+      }
+    } else {
+      // First part for this tile (or a re-parse): reset.
+      this.tiles[tileContext.id] = part;
+      this._extraParts.delete(tileContext.id);
+    }
 
     // Only this tile's caches are stale. Previously every tile of the feature
     // was invalidated here, rebuilding every Path2D each time one tile arrived.
@@ -83,6 +104,7 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
    */
   removeTile(tileId: string): number {
     delete this.tiles[tileId];
+    this._extraParts.delete(tileId);
     this._invalidateTileCaches(tileId);
     return Object.keys(this.tiles).length;
   }
@@ -108,6 +130,17 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
    */
   getTile(tileContext: TileContext): TileFeatureData {
     return this.tiles[tileContext.id];
+  }
+
+  /**
+   * Every part of this feature within one tile: the primary entry plus any
+   * additional same-id parts a tiler split it into.
+   */
+  getTileParts(tileId: string): TileFeatureData[] {
+    const primary = this.tiles[tileId];
+    if (!primary) return [];
+    const extras = this._extraParts.get(tileId);
+    return extras ? [primary, ...extras] : [primary];
   }
 
   /**
@@ -169,11 +202,14 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
       }) || this.style;
 
     const isReplaced = this.selected && this.mVTSource.isFeatureReplaced?.(this.featureId);
+    const parts = this._extraParts.get(tileContext.id);
 
     if (isReplaced) {
       this._createPathsForHoverDetection(tileContext, tile);
+      if (parts) for (const part of parts) this._createPathsForHoverDetection(tileContext, part);
     } else {
       this._draw(tileContext, tile, currentStyle, this);
+      if (parts) for (const part of parts) this._draw(tileContext, part, currentStyle, this);
     }
   }
 
@@ -317,6 +353,11 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
     Object.values(this.tiles).forEach((tile) => {
       tile.paths2d = null;
     });
+    this._extraParts.forEach((parts) =>
+      parts.forEach((part) => {
+        part.paths2d = null;
+      }),
+    );
   }
 
   /**
@@ -395,14 +436,17 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
     const tile = this.tiles[tileContext.id];
     if (!tile) return [];
 
-    const coordinates = tile.vectorTileFeature.loadGeometry();
-    if (!coordinates?.length) return [];
-
+    const parts = this._extraParts.get(tileContext.id);
     const paths: Point[][] = [];
-    for (const coordinate of coordinates) {
-      const path = coordinate.map((coord: any) => this._getPoint(coord, tileContext, tile.divisor));
-      if (path.length > 0) paths.push(path);
+    for (const part of parts ? [tile, ...parts] : [tile]) {
+      const coordinates = part.vectorTileFeature.loadGeometry();
+      if (!coordinates?.length) continue;
+      for (const coordinate of coordinates) {
+        const path = coordinate.map((coord: any) => this._getPoint(coord, tileContext, part.divisor));
+        if (path.length > 0) paths.push(path);
+      }
     }
+    if (paths.length === 0) return [];
 
     if (this._cachedPaths.size >= MVTFeature.MAX_CACHE_SIZE) {
       const firstKey = this._cachedPaths.keys().next().value;
@@ -465,9 +509,6 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
       return false;
     }
 
-    const paths2d = this._getOptimizedPaths2D(tileContext, tile);
-    if (!paths2d) return false;
-
     const context2d = getTileContext2D(tileContext);
     if (!context2d) return false;
 
@@ -476,7 +517,15 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
     // the query point has to be scaled by hand. Skipping this puts every click
     // on a retina screen off by exactly the pixel ratio.
     const ratio = pixelRatioOf(tileContext);
-    return context2d.isPointInPath(paths2d, toDevicePixels(point.x, ratio), toDevicePixels(point.y, ratio));
+    const x = toDevicePixels(point.x, ratio);
+    const y = toDevicePixels(point.y, ratio);
+
+    const parts = this._extraParts.get(tileContext.id);
+    for (const part of parts ? [tile, ...parts] : [tile]) {
+      const paths2d = this._getOptimizedPaths2D(tileContext, part);
+      if (paths2d && context2d.isPointInPath(paths2d, x, y)) return true;
+    }
+    return false;
   }
 
   /**
@@ -496,6 +545,7 @@ export class MVTFeature<TProps extends object = FeatureProperties> {
     this._invalidatePath2DCache();
     // Drop references to the decoded tile data, which pins the PBF buffer.
     this.tiles = {};
+    this._extraParts.clear();
 
     if (this.mVTSource.unregisterFeature) {
       this.mVTSource.unregisterFeature(this.featureId);
