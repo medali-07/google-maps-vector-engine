@@ -84,7 +84,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
-    "@eslint/js": "^9.15.0",
+    "@eslint/js": "^10.0.1",
     "@size-limit/preset-small-lib": "^11.2.0",
     "@testing-library/jest-dom": "^5.16.0",
     "@types/google.maps": "^3.58.1",
