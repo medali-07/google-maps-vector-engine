@@ -27,7 +27,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A manual run on a branch with "dry run" unchecked satisfies neither
       # the Publish condition nor the Dry run condition: every check would
