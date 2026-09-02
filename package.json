@@ -91,7 +91,7 @@
     "@types/jest": "^29.0.0",
     "@types/node": "^20.0.0",
     "@types/pbf": "3.0.5",
-    "@types/react": "^18.3.31",
+    "@types/react": "^19.2.18",
     "eslint": "^9.15.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^15.12.0",
