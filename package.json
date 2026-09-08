@@ -77,7 +77,7 @@
     "@types/google.maps": "^3.0.0"
   },
   "dependencies": {
-    "@mapbox/vector-tile": "^2.0.4",
+    "@mapbox/vector-tile": "^3.0.0",
     "@turf/intersect": "^7.4.0",
     "@turf/union": "^7.4.0",
     "pbf": "^4.0.1"
