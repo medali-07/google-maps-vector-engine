@@ -16,7 +16,7 @@ We welcome contributions to google-maps-vector-engine! This guide will help you 
 
 ### Prerequisites
 
-- **Node.js 18+**
+- **Node.js 24** (see `.nvmrc`)
 - **npm or yarn**
 - **Git**
 - **TypeScript knowledge**

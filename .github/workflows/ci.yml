@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [18, 20, 22]
+        node: [20, 22, 24]
     steps:
       - uses: actions/checkout@v7
 
@@ -57,7 +57,7 @@ jobs:
         run: npm run test:coverage
 
       - name: Upload coverage
-        if: matrix.node == 20
+        if: matrix.node == 24
         uses: actions/upload-artifact@v7
         with:
           name: coverage
