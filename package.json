@@ -86,7 +86,7 @@
     "@arethetypeswrong/cli": "^0.18.5",
     "@eslint/js": "^9.15.0",
     "@size-limit/preset-small-lib": "^13.0.3",
-    "@testing-library/jest-dom": "^5.16.0",
+    "@testing-library/jest-dom": "^7.0.1",
     "@types/google.maps": "^3.58.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
