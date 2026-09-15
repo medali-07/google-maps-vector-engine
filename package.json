@@ -80,7 +80,7 @@
     "@mapbox/vector-tile": "^2.0.4",
     "@turf/intersect": "^7.4.0",
     "@turf/union": "^7.4.0",
-    "pbf": "^4.0.1"
+    "pbf": "^5.1.2"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
